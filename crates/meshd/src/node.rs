@@ -239,12 +239,20 @@ struct RelayState {
     key: PairKey,
     /// Timestamp of the last HELLO sent; only an ACK echoing it counts.
     hello_ts: u64,
+    /// Timestamp echoed by the last accepted HELLO_ACK.
+    acked_ts: u64,
     hello_at: Instant,
     next_hello: Instant,
     rtt: Option<Duration>,
     last_ack: Option<Instant>,
     public: Option<SocketAddrV4>,
     version: u64,
+}
+
+/// A NO_ROUTE echo is fresh when it names a HELLO sent no earlier than the last acknowledged
+/// one: the relay echoes the newest HELLO it accepted, which may be one whose ACK was lost.
+fn fresh_no_route(echoed: u64, acked: u64, sent: u64) -> bool {
+    acked != 0 && echoed >= acked && echoed <= sent
 }
 
 impl RelayState {
@@ -357,6 +365,7 @@ pub fn run(cfg: Config) -> io::Result<()> {
             addr: SocketAddr::V4(r.addr),
             key: PairKey::new(&secret, &r.key),
             hello_ts: 0,
+            acked_ts: 0,
             hello_at: now,
             next_hello: now,
             rtt: None,
@@ -950,7 +959,7 @@ impl<'a> Rx<'a> {
                             self.disco(payload, Via::Relay(ri));
                         }
                     }
-                    wire::NO_ROUTE => self.no_route(ri, field),
+                    wire::NO_ROUTE => self.no_route(ri, field, p),
                     wire::ROSTER_PART => self.roster_part(ri, p),
                     wire::BLOB_PART => self.updater.part(&self.sh.wan, self.relays[ri].addr, p),
                     _ => {}
@@ -1123,7 +1132,15 @@ impl<'a> Rx<'a> {
         best.map(|(i, _)| i).or(if self.relays.is_empty() { None } else { Some(0) })
     }
 
-    fn no_route(&mut self, ri: usize, id: u16) {
+    /// Acts only on a NO_ROUTE sealed by the relay and echoing a HELLO it accepted since our
+    /// last ACK: a spoofed or replayed one would otherwise push peers off a working relay.
+    /// Relays before v9 send it unsealed; it is ignored and the path falls back on timeouts.
+    fn no_route(&mut self, ri: usize, id: u16, p: &mut [u8]) {
+        let r = &self.relays[ri];
+        let Some(ts) = wire::open(&r.key, p).and_then(|plain| wire::get_u64(plain)) else { return };
+        if !fresh_no_route(ts, r.acked_ts, r.hello_ts) {
+            return;
+        }
         let Some(&pi) = self.sh.by_id.get(&id) else { return };
         let mut st = self.sh.peers[pi].st.lock().unwrap();
         // Try the next relay that is alive; the peer may only be registered there.
@@ -1139,15 +1156,12 @@ impl<'a> Rx<'a> {
 
     fn hello_ack(&mut self, ri: usize, p: &mut [u8]) {
         let r = &mut self.relays[ri];
-        let Some(plain) = wire::open(&r.key, p) else { return };
-        let (Some(ts), Some(public), Some(version)) =
-            (wire::get_u64(plain), wire::get_addr(&plain[8..]), plain.get(14..).and_then(wire::get_u64))
-        else {
-            return;
-        };
+        let Some(ack) = wire::open(&r.key, p).and_then(|plain| wire::parse_hello_ack(plain)) else { return };
+        let wire::HelloAck { ts, public, roster_version: version, release } = ack;
         if ts != r.hello_ts {
             return;
         }
+        r.acked_ts = ts;
         let now = Instant::now();
         let was_alive = r.alive(now);
         r.rtt = Some(now.duration_since(r.hello_at));
@@ -1160,7 +1174,6 @@ impl<'a> Rx<'a> {
         r.next_hello = now + HELLO_EVERY;
         // Reaching a relay is the health check for a freshly installed release.
         let relay_addr = r.addr;
-        let release = plain.get(22..62).and_then(|b| Some((wire::get_u64(b)?, <[u8; 32]>::try_from(&b[8..40]).ok()?)));
         self.updater.healthy();
         if let Some((rv, hash)) = release {
             self.updater.announced(&self.sh.wan, relay_addr, rv, hash);
@@ -1594,6 +1607,16 @@ mod tests {
     use super::{accept_services, announce_due, services_ttl, ANNOUNCE_EVERY, MAX_SERVICES_SKEW_NANOS};
     use meshproto::service::Service;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn no_route_must_echo_a_hello_since_the_last_ack() {
+        use super::fresh_no_route;
+        assert!(!fresh_no_route(5, 0, 5), "no ACK yet: nothing to compare with");
+        assert!(fresh_no_route(10, 10, 10));
+        assert!(fresh_no_route(12, 10, 12), "newer HELLO accepted, its ACK lost");
+        assert!(!fresh_no_route(9, 10, 12), "replayed from before the last ACK");
+        assert!(!fresh_no_route(13, 10, 12), "a HELLO we never sent");
+    }
 
     #[test]
     fn announcements_must_be_newer_and_near_our_clock() {

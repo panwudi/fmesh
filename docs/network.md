@@ -109,8 +109,9 @@ bytes is WireGuard; a first byte `0xFA` is fMesh control, the second byte is the
 | `FA 02` HELLO_ACK | relay -> node | `[nonce][enc{echoed timestamp, node's public address, relay roster version, release version}]` | STUN and RTT |
 | `FA 03` FWD | node -> relay | `[dest id u16][payload]` | forward; the relay identifies the sender by the checked-in source address, never by a field |
 | `FA 04` FWD_FROM | relay -> node | `[source id u16][payload]` | accepted only from roster relay addresses |
-| `FA 05` / `FA 06` | node <-> relay | chunked roster fetch | answered only to checked-in addresses |
-| `FA 07` NO_ROUTE | relay -> node | `[dest id u16]` | destination not checked in here; try the next relay |
+| `FA 05` / `FA 06` | node <-> relay | chunked roster fetch | answered only to checked-in addresses, within a per-node byte budget |
+| `FA 07` NO_ROUTE | relay -> node | `[dest id u16][enc{echoed HELLO timestamp}]` | destination not checked in here; try the next relay. Since v9 sealed; v9 nodes ignore an unsealed or stale one |
+| `FA 08` / `FA 09` | node <-> relay | chunked release blob fetch (up to 16 chunks per request) | same address check and budget as the roster fetch |
 
 Relay forwarding adds 4 bytes, so the largest relayed packet is 1484 bytes and IPv4 never fragments.
 Relays and node sockets are IPv4 only for now (an IPv6 direct path would exceed common PPPoE MTUs).
@@ -238,17 +239,19 @@ status file. **An announcement is a discovery candidate, never authorization.**
 
 Implemented: signed roster and release manifests, authenticated control plane, HELLO replay window,
 source-address binding of decrypted packets (v7), rate-limited unknown handshakes, signed self-update
-with automatic rollback.
+with automatic rollback. v9: sealed and fresh NO_ROUTE, per-node fetch budget on relays,
+panic-free HELLO_ACK parsing.
 
-Not done; v8 is **not** a closed security review:
+Not done; v9 is **not** a closed security review:
 
 - The admin signing key is root of every node (it signs updates). It must be passphrase, keychain or
   hardware protected; it is never in this repository.
 - No access control inside the mesh: it is a flat network except per-node inbound allowlists
   (`--inbound tcp:22,...`).
-- Relay amplification through ROSTER_GET / BLOB_GET needs review.
-- NO_ROUTE is unauthenticated.
-- A too-short HELLO_ACK plaintext can panic (`&plain[8..]`).
+- Relay amplification through ROSTER_GET / BLOB_GET is bounded, not removed: a spoofer of a
+  registered node's address can reflect at most an 8 MiB burst plus about 2.3 KB/s toward that node,
+  and draining the budget delays that node's updates by up to an hour. Sealed fetch requests would
+  remove it once no pre-v9 node is left.
 - DISCO messages can be replayed inside their window; static DH gives no forward secrecy for control.
 - Enrollment pre-generates node keys centrally; a "generate locally, request, admin approves" flow is
   needed for fleet rollout.

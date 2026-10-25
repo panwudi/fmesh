@@ -25,14 +25,16 @@ pub const FWD_FROM: u8 = 0x04;
 pub const ROSTER_GET: u8 = 0x05;
 /// relay -> node: `[0][total u32][offset u32][bytes]`.
 pub const ROSTER_PART: u8 = 0x06;
-/// relay -> node: `[dst id]`. `dst` has not registered with this relay; try another.
+/// relay -> node: `[dst id][sealed: ts u64]`. `dst` has not registered with this relay; try
+/// another. `ts` echoes the sender's last accepted HELLO, so a forged or old NO_ROUTE cannot
+/// move a node off a working relay. Releases before v9 send the bare header and ignore the rest.
 pub const NO_ROUTE: u8 = 0x07;
 /// node -> relay: `[0][sha256 32][offset u32][count u8]`. Fetch up to `count` chunks of the
 /// blob with that SHA-256 (the release manifest or a binary), starting at `offset`.
 pub const BLOB_GET: u8 = 0x08;
 /// relay -> node: `[0][sha256 32][total u32][offset u32][bytes]`.
 pub const BLOB_PART: u8 = 0x09;
-/// Most chunks answered per BLOB_GET (registered nodes only, so this is not an amplifier).
+/// Most chunks answered per BLOB_GET (registered nodes only, within the relay's per-node budget).
 pub const BLOB_WINDOW: u8 = 16;
 /// node <-> node, direct or inside FWD: `[src id][sealed: kind u8, body]`.
 pub const DISCO: u8 = 0x10;
@@ -102,4 +104,57 @@ pub fn open<'a>(key: &PairKey, msg: &'a mut [u8]) -> Option<&'a mut [u8]> {
     }
     let (hdr, rest) = msg.split_at_mut(HDR);
     key.open(hdr, rest)
+}
+
+/// A decrypted HELLO_ACK.
+#[derive(Debug, PartialEq)]
+pub struct HelloAck {
+    pub ts: u64,
+    pub public: SocketAddrV4,
+    pub roster_version: u64,
+    /// Release version and manifest SHA-256, when the relay publishes one.
+    pub release: Option<(u64, [u8; 32])>,
+}
+
+/// Parses a HELLO_ACK plaintext. Short or malformed input is `None`, never a panic.
+pub fn parse_hello_ack(plain: &[u8]) -> Option<HelloAck> {
+    let ts = get_u64(plain)?;
+    let public = get_addr(plain.get(8..)?)?;
+    let roster_version = get_u64(plain.get(14..)?)?;
+    let release = plain.get(22..62).and_then(|b| Some((get_u64(b)?, <[u8; 32]>::try_from(&b[8..40]).ok()?)));
+    Some(HelloAck { ts, public, roster_version, release })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ack(release: bool) -> Vec<u8> {
+        let mut b = 7u64.to_be_bytes().to_vec();
+        put_addr(&mut b, SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 41820));
+        b.extend_from_slice(&3u64.to_be_bytes());
+        if release {
+            b.extend_from_slice(&9u64.to_be_bytes());
+            b.extend_from_slice(&[0xAB; 32]);
+        }
+        b
+    }
+
+    #[test]
+    fn hello_ack_parses_with_and_without_release() {
+        let a = parse_hello_ack(&ack(false)).unwrap();
+        assert_eq!((a.ts, a.roster_version, a.release), (7, 3, None));
+        assert_eq!(a.public, SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 41820));
+        assert_eq!(parse_hello_ack(&ack(true)).unwrap().release, Some((9, [0xAB; 32])));
+    }
+
+    #[test]
+    fn short_hello_ack_is_rejected_without_panicking() {
+        let full = ack(true);
+        for cut in 0..22 {
+            assert!(parse_hello_ack(&full[..cut]).is_none(), "accepted {cut} bytes");
+        }
+        // A truncated release part is ignored, not an error.
+        assert_eq!(parse_hello_ack(&full[..40]).unwrap().release, None);
+    }
 }

@@ -22,6 +22,12 @@ const OFFLINE_AFTER: Duration = Duration::from_secs(60);
 const MAX_SKEW_NANOS: u64 = 60_000_000_000;
 const TICK: Duration = Duration::from_secs(1);
 const ROSTER_CHECK: Duration = Duration::from_secs(5);
+/// Roster and release bytes a node may pull in a burst. A full update (manifest + one binary)
+/// is about 1 MB, so this allows several, while a spoofed source address can turn a relay into
+/// an amplifier aimed at a registered node for at most this much plus `FETCH_REFILL`.
+const FETCH_BURST: f64 = 8.0 * 1024.0 * 1024.0;
+/// Budget refill, bytes per second (another burst per hour).
+const FETCH_REFILL: f64 = FETCH_BURST / 3600.0;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -79,11 +85,26 @@ struct Node {
     last_seen: Option<Instant>,
     /// An offline alert went out and no back-online alert yet.
     alerted: bool,
+    /// Bytes left for ROSTER_PART / BLOB_PART replies, and when it was last refilled.
+    budget: f64,
+    budget_at: Instant,
 }
 
 impl Node {
     fn online(&self, now: Instant) -> bool {
         self.last_seen.is_some_and(|t| now.duration_since(t) < OFFLINE_AFTER)
+    }
+
+    /// Takes `bytes` from the fetch budget; false (and nothing taken) when it is used up.
+    fn spend(&mut self, bytes: usize, now: Instant) -> bool {
+        let refill = now.duration_since(self.budget_at).as_secs_f64() * FETCH_REFILL;
+        self.budget = (self.budget + refill).min(FETCH_BURST);
+        self.budget_at = now;
+        if self.budget < bytes as f64 {
+            return false;
+        }
+        self.budget -= bytes as f64;
+        true
     }
 }
 
@@ -191,7 +212,16 @@ impl Relay {
             let node = match prev {
                 // Same id and name: keep the address only if the key is unchanged.
                 Some(p) if self.roster.nodes.iter().any(|o| o.id == n.id && o.key == n.key) => Node { key, ..p },
-                _ => Node { name: n.name.clone(), key, addr: None, last_ts: 0, last_seen: None, alerted: false },
+                _ => Node {
+                    name: n.name.clone(),
+                    key,
+                    addr: None,
+                    last_ts: 0,
+                    last_seen: None,
+                    alerted: false,
+                    budget: FETCH_BURST,
+                    budget_at: Instant::now(),
+                },
             };
             self.nodes.insert(n.id, node);
         }
@@ -270,18 +300,21 @@ impl Relay {
         let now = Instant::now();
         let to = self.nodes.get(&dst).filter(|n| n.online(now)).and_then(|n| n.addr);
         let Some(to) = to else {
-            self.sock.send_to(&wire::header(wire::NO_ROUTE, dst), src).ok();
+            // Sealed, echoing the sender's last HELLO: a v9 node only acts on a fresh one.
+            // Older nodes read just the header.
+            let Some(sender) = self.nodes.get(&from) else { return };
+            let msg = wire::sealed(wire::NO_ROUTE, dst, &sender.key, &sender.last_ts.to_be_bytes());
+            self.sock.send_to(&msg, src).ok();
             return;
         };
         p[..wire::HDR].copy_from_slice(&wire::header(wire::FWD_FROM, from));
         self.sock.send_to(p, to).ok();
     }
 
-    /// Only registered addresses get the roster: the reply is larger than the request.
+    /// Only registered addresses get the roster, within their fetch budget: the reply is
+    /// larger than the request.
     fn roster_part(&mut self, p: &[u8], src: SocketAddr) {
-        if !self.by_addr.contains_key(&src) {
-            return;
-        }
+        let Some(&id) = self.by_addr.get(&src) else { return };
         let Some(off) = wire::get_u32(&p[wire::HDR..]) else { return };
         let raw = &self.roster.raw;
         let off = (off as usize).min(raw.len());
@@ -291,7 +324,10 @@ impl Relay {
         out.extend_from_slice(&(raw.len() as u32).to_be_bytes());
         out.extend_from_slice(&(off as u32).to_be_bytes());
         out.extend_from_slice(&raw[off..end]);
-        self.sock.send_to(&out, src).ok();
+        let Some(node) = self.nodes.get_mut(&id) else { return };
+        if node.spend(out.len(), Instant::now()) {
+            self.sock.send_to(&out, src).ok();
+        }
     }
 
     /// Loads `<dir>/release/manifest` and the binaries it lists when the manifest changes.
@@ -330,11 +366,14 @@ impl Relay {
         }
     }
 
-    /// Up to `BLOB_WINDOW` chunks of a published blob, to registered addresses only.
+    /// Up to `BLOB_WINDOW` chunks of a published blob, to registered addresses only and
+    /// within their fetch budget.
     fn blob_parts(&mut self, p: &[u8], src: SocketAddr) {
-        if !self.by_addr.contains_key(&src) || p.len() < wire::HDR + 37 {
+        let Some(&id) = self.by_addr.get(&src) else { return };
+        if p.len() < wire::HDR + 37 {
             return;
         }
+        let Some(node) = self.nodes.get_mut(&id) else { return };
         let Some(rel) = &self.release else { return };
         let b = &p[wire::HDR..];
         let hash: [u8; 32] = b[..32].try_into().expect("32 bytes");
@@ -352,6 +391,9 @@ impl Relay {
             out.extend_from_slice(&(data.len() as u32).to_be_bytes());
             out.extend_from_slice(&(off as u32).to_be_bytes());
             out.extend_from_slice(&data[off..end]);
+            if !node.spend(out.len(), Instant::now()) {
+                break;
+            }
             self.sock.send_to(&out, src).ok();
             off = end;
         }
@@ -468,6 +510,48 @@ mod tests {
     fn escaping() {
         assert_eq!(json_str("a\"b\\c"), r#""a\"b\\c""#);
         assert_eq!(curl_str(r#"{"k":"v\"}"#), r#""{\"k\":\"v\\\"}""#);
+    }
+
+    fn pair() -> (PairKey, PairKey) {
+        let (a, b) = (x25519::StaticSecret::from([7u8; 32]), x25519::StaticSecret::from([9u8; 32]));
+        let (pa, pb) = (x25519::PublicKey::from(&a).to_bytes(), x25519::PublicKey::from(&b).to_bytes());
+        (PairKey::new(&a, &pb), PairKey::new(&b, &pa))
+    }
+
+    #[test]
+    fn fetch_budget_caps_bursts_and_refills() {
+        let now = Instant::now();
+        let mut n = Node {
+            name: "laptop1".into(),
+            key: pair().0,
+            addr: None,
+            last_ts: 0,
+            last_seen: None,
+            alerted: false,
+            budget: FETCH_BURST,
+            budget_at: now,
+        };
+        let chunk = wire::HDR + 40 + wire::ROSTER_CHUNK;
+        let mut sent = 0;
+        while n.spend(chunk, now) {
+            sent += chunk;
+        }
+        assert!(sent as f64 <= FETCH_BURST && sent as f64 > FETCH_BURST - chunk as f64);
+        assert!(!n.spend(chunk, now + Duration::from_millis(100)), "refill is slow");
+        assert!(n.spend(chunk, now + Duration::from_secs(2)), "but it comes back");
+    }
+
+    #[test]
+    fn no_route_keeps_the_old_header_and_seals_the_echo() {
+        let (relay_side, node_side) = pair();
+        let mut msg = wire::sealed(wire::NO_ROUTE, 42, &relay_side, &1234u64.to_be_bytes());
+        // Nodes before v9 read only this.
+        assert_eq!(wire::control(&msg), Some((wire::NO_ROUTE, 42)));
+        let plain = wire::open(&node_side, &mut msg).expect("opens with the pair key");
+        assert_eq!(wire::get_u64(plain), Some(1234));
+        let mut forged = wire::header(wire::NO_ROUTE, 42).to_vec();
+        forged.extend_from_slice(&[0u8; 40]);
+        assert!(wire::open(&node_side, &mut forged).is_none());
     }
 
     #[test]
