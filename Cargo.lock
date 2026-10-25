@@ -529,6 +529,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmesh"
+version = "0.0.1"
+dependencies = [
+ "fmesh-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fmesh-core"
 version = "0.0.1"
 dependencies = [

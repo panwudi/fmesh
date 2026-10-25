@@ -1,0 +1,11 @@
+[package]
+name = "fmesh"
+description = "fMesh command line: status, devices and agents for any install, plus the module CLIs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+fmesh-core = { path = "../fmesh-core" }
+serde_json = "1.0"
+serde = "1.0"
