@@ -27,7 +27,8 @@ pub const ROSTER_GET: u8 = 0x05;
 pub const ROSTER_PART: u8 = 0x06;
 /// relay -> node: `[dst id][sealed: ts u64]`. `dst` has not registered with this relay; try
 /// another. `ts` echoes the sender's last accepted HELLO, so a forged or old NO_ROUTE cannot
-/// move a node off a working relay. Releases before v9 send the bare header and ignore the rest.
+/// move a node off a working relay. Nodes ignore an unsealed one. Releases before v9 send the
+/// bare header and read only the header.
 pub const NO_ROUTE: u8 = 0x07;
 /// node -> relay: `[0][sha256 32][offset u32][count u8]`. Fetch up to `count` chunks of the
 /// blob with that SHA-256 (the release manifest or a binary), starting at `offset`.
