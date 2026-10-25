@@ -37,8 +37,31 @@ pub fn default_command() -> Option<Vec<String>> {
     {
         let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
         let exe = home.join(".local/bin/agent-inbox");
-        Some(vec![exe.to_string_lossy().into_owned(), "who".into(), "--local".into(), "--json".into()])
+        let mut argv = vec![exe.to_string_lossy().into_owned(), "who".into(), "--local".into(), "--json".into()];
+        let daemon = std::fs::read_to_string(home.join(".config/agent-inbox/daemon.toml")).unwrap_or_default();
+        if let Some(listen) = relay_listen(&daemon) {
+            argv.extend(["--hub".into(), listen]);
+        }
+        Some(argv)
     }
+}
+
+/// `listen` under `[relay]` in daemon.toml: the local relay this user's sessions join. A
+/// line scan is enough for the file `fmesh install agent` writes; otherwise agent-inbox's
+/// own default applies.
+pub fn relay_listen(daemon_toml: &str) -> Option<String> {
+    let mut in_relay = false;
+    for line in daemon_toml.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_relay = line == "[relay]";
+        } else if in_relay {
+            if let Some(v) = line.strip_prefix("listen").map(str::trim_start).and_then(|r| r.strip_prefix('=')) {
+                let v = v.trim().trim_matches(|c| c == '\'' || c == '"');
+                return (!v.is_empty() && v.starts_with("127.0.0.1:")).then(|| v.to_owned());
+            }
+        }
+    }
+    None
 }
 
 pub fn query(command: Option<&[String]>) -> Directory {
@@ -122,6 +145,14 @@ mod tests {
         let Directory::Listed { rows } = d else { panic!("{d:?}") };
         let got: Vec<_> = rows.iter().map(|r| (r.name.as_str(), r.receiving, r.host_marker)).collect();
         assert_eq!(got, [("laptop1.main", true, false), ("laptop1.idle", false, false), ("server1.*", false, true)]);
+    }
+
+    #[test]
+    fn relay_address_comes_from_the_daemon_config() {
+        let toml = "state_dir = 'x'\nlisten = '127.0.0.1:1'\n[relay]\nconfig = 'relay.toml'\nlisten = '127.0.0.1:18831'\n[codex_watch]\nlisten = 'no'\n";
+        assert_eq!(relay_listen(toml).as_deref(), Some("127.0.0.1:18831"));
+        assert_eq!(relay_listen("[relay]\nlisten = \"0.0.0.0:1\"\n"), None, "loopback only");
+        assert_eq!(relay_listen(""), None);
     }
 
     #[test]

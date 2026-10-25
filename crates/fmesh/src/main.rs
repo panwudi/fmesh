@@ -5,6 +5,8 @@
 //! `--json` gives scripts a stable shape. `agent ...` and `net ...` hand over to the module
 //! binaries (agent-inbox, meshd) unchanged; their names, paths and options stay as installed.
 
+mod install;
+
 use fmesh_core::view::{self, Agents, Device, Filter, View, SHARED_NOTE};
 use fmesh_core::{directory, labels, status};
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ fmesh agents [--json] [<search>]
 fmesh agent <agent-inbox arguments>   (Agent Mesh: send, who, relay, ...)
 fmesh net <meshd arguments>           (Network Mesh: status, up, ...)
 fmesh desktop                         (native device and agent list)
+fmesh install agent|network|desktop   (one module; --dry-run shows the plan)
 fmesh version";
 
 fn main() -> ExitCode {
@@ -28,7 +31,8 @@ fn main() -> ExitCode {
         Some("agents") => agents_cmd(&rest),
         Some("agent") => hand_over(&agent_inbox(), &rest),
         Some("net") => hand_over(&meshd(), &rest),
-        Some("desktop") => hand_over(&sibling("fmesh-desktop"), &rest),
+        Some("desktop") => hand_over(&desktop(), &rest),
+        Some("install") => install::run(&rest),
         Some("version" | "--version") => {
             println!("fmesh {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -190,6 +194,11 @@ fn agent_inbox() -> PathBuf {
         c.push(PathBuf::from(home).join(".local/bin/agent-inbox"));
     }
     first_existing(&c, "agent-inbox")
+}
+
+fn desktop() -> PathBuf {
+    let installed = if cfg!(windows) { r"C:\Program Files\flytoMesh\fmesh-desktop.exe" } else { "/opt/flytomesh/fmesh-desktop" };
+    first_existing(&[sibling("fmesh-desktop"), PathBuf::from(installed)], "fmesh-desktop")
 }
 
 fn meshd() -> PathBuf {

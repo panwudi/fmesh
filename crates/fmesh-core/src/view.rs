@@ -203,7 +203,9 @@ impl View {
     }
 }
 
-fn agents_for(host: &str, online: bool, port: Option<u16>, dir: &Directory) -> Agents {
+/// `hosts`: the relay host prefixes that belong to this device. This device also takes rows
+/// from hosts no mesh device is named after (its relay may use another name than meshd).
+fn agents_for(hosts: &[&str], online: bool, port: Option<u16>, dir: &Directory) -> Agents {
     if !online {
         return Agents::DeviceOffline;
     }
@@ -214,7 +216,7 @@ fn agents_for(host: &str, online: bool, port: Option<u16>, dir: &Directory) -> A
         Directory::Unavailable { reason } => return Agents::Unavailable { reason: reason.clone() },
         Directory::Listed { rows } => rows,
     };
-    let mine = |r: &&AgentRow| r.name.split_once('.').is_some_and(|(h, _)| h == host);
+    let mine = |r: &&AgentRow| r.name.split_once('.').is_some_and(|(h, _)| hosts.contains(&h));
     if rows.iter().filter(mine).any(|r| r.host_marker) {
         return Agents::Unavailable { reason: "名单暂不可用: 对端目录未响应".into() };
     }
@@ -240,12 +242,18 @@ pub fn build(s: &Status, labels: &Labels, dir: &Directory) -> View {
     // Agent-only machines have no status file: take this host's name from the local
     // directory when it names exactly one host.
     let me_name = if s.me.is_empty() { local_host(dir).unwrap_or_else(|| "本机".into()) } else { s.me.clone() };
-    // This device's agents do not depend on the network: with meshd stopped, list them as
-    // long as the local directory answers.
-    let me_agents = match (s.running, port(&s.me)) {
-        (true, p) => agents_for(&me_name, true, p, dir),
-        (false, _) => agents_for(&me_name, true, Some(0), dir),
-    };
+    let mut known: Vec<&str> = s.peers.iter().map(|p| p.name.as_str()).collect();
+    known.push(&me_name);
+    let mut my_hosts = vec![me_name.as_str()];
+    if let Directory::Listed { rows } = dir {
+        for h in rows.iter().filter_map(|r| r.name.split_once('.').map(|(h, _)| h)) {
+            if !known.contains(&h) && !my_hosts.contains(&h) {
+                my_hosts.push(h);
+            }
+        }
+    }
+    // The local directory answers for this device whether or not it announces the service.
+    let me_agents = agents_for(&my_hosts, true, Some(0), dir);
     devices.push(Device {
         mesh_name: format!("{me_name}.mesh"),
         ip: s.ip.clone(),
@@ -274,7 +282,7 @@ pub fn build(s: &Status, labels: &Labels, dir: &Directory) -> View {
             owner: labels.owners.get(&p.name).cloned(),
             shared: labels.shared_hosts.contains(&p.name),
             agent_port: port(&p.name),
-            agents: agents_for(&p.name, p.online, port(&p.name), dir),
+            agents: agents_for(&[p.name.as_str()], p.online, port(&p.name), dir),
         });
     }
     let summary = Summary {
@@ -374,6 +382,14 @@ mod tests {
         assert_eq!(by(&v, "laptop1").agent_list().len(), 1);
         assert!(v.devices.iter().filter(|d| !d.me).all(|d| d.agents == Agents::DeviceOffline));
         assert_eq!(v.summary.lines()[0], "组网未运行");
+    }
+
+    #[test]
+    fn a_relay_named_unlike_the_node_still_lists_under_this_device() {
+        let dir = directory::parse(br#"[{"name":"box.a","status":"online"},{"name":"laptop2.ops","status":"online"}]"#);
+        let v = build(&status::parse(STATUS, true), &Labels::default(), &dir);
+        assert_eq!(by(&v, "laptop1").agent_list().iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["box.a"]);
+        assert_eq!(by(&v, "laptop2").agent_list().len(), 1);
     }
 
     #[test]
