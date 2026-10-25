@@ -628,11 +628,11 @@ mod tests {
     }
     #[test]
     fn prefix_matches_both_halves_of_a_23_and_boundary_lengths() {
-        let prefix = Prefix::parse("192.168.110.0/23").unwrap();
-        for ip in ["192.168.110.1", "192.168.111.254"] {
+        let prefix = Prefix::parse("10.20.110.0/23").unwrap();
+        for ip in ["10.20.110.1", "10.20.111.254"] {
             assert!(prefix.contains(ip.parse().unwrap()));
         }
-        for ip in ["192.168.109.255", "192.168.112.0"] {
+        for ip in ["10.20.109.255", "10.20.112.0"] {
             assert!(!prefix.contains(ip.parse().unwrap()));
         }
         assert!(
@@ -645,7 +645,7 @@ mod tests {
                 .unwrap()
                 .contains("127.0.0.2".parse().unwrap())
         );
-        assert!(Prefix::parse("192.168.110.0/33").is_err());
+        assert!(Prefix::parse("10.20.110.0/33").is_err());
     }
     #[test]
     fn jitter_growth_cap_and_reset_require_five_authenticated_minutes() {

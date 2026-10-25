@@ -58,7 +58,7 @@ impl Fixture {
                 .success()
         );
         let config = format!(
-            "INBOX_BIN='{}'\nINBOX_SSH_USER='fixture-user'\nINBOX_SSH_KEY='{}/key with spaces'\nINBOX_KNOWN_HOSTS='{}/known_hosts'\nINBOX_HOST_KEY_ALIAS='fixture-hub'\nINBOX_SSH_CONFIG='{}/ssh_config'\nINBOX_INTR_HOST='intranet.test'\nINBOX_INTR_PORT=22\nINBOX_PUBLIC_HOST='public.test'\nINBOX_PUBLIC_PORT=2222\nINBOX_INTR_PREFIX='192.168.110.0/23'\nINBOX_INTR_GATEWAY='192.168.110.1'\nINBOX_DIAL_LOCK_FILE='{}/relay.lock'\nINBOX_SSH_BIN='{}/fake-ssh'\nINBOX_NC_BIN='{}/fake-ssh'\nINBOX_LOCAL_FACTS_BIN='{}/fake-ssh'\nINBOX_LOCAL_INBOX_PORT={}\nINBOX_REVERSE_PORT={}\nINBOX_LOCAL_SEND_PORT={}\nINBOX_HUB_PORT={}\n",
+            "INBOX_BIN='{}'\nINBOX_SSH_USER='fixture-user'\nINBOX_SSH_KEY='{}/key with spaces'\nINBOX_KNOWN_HOSTS='{}/known_hosts'\nINBOX_HOST_KEY_ALIAS='fixture-hub'\nINBOX_SSH_CONFIG='{}/ssh_config'\nINBOX_INTR_HOST='intranet.test'\nINBOX_INTR_PORT=22\nINBOX_PUBLIC_HOST='public.test'\nINBOX_PUBLIC_PORT=2222\nINBOX_INTR_PREFIX='10.20.110.0/23'\nINBOX_INTR_GATEWAY='10.20.110.1'\nINBOX_DIAL_LOCK_FILE='{}/relay.lock'\nINBOX_SSH_BIN='{}/fake-ssh'\nINBOX_NC_BIN='{}/fake-ssh'\nINBOX_LOCAL_FACTS_BIN='{}/fake-ssh'\nINBOX_LOCAL_INBOX_PORT={}\nINBOX_REVERSE_PORT={}\nINBOX_LOCAL_SEND_PORT={}\nINBOX_HUB_PORT={}\n",
             env!("CARGO_BIN_EXE_agent-inbox"),
             root.display(),
             root.display(),
@@ -228,11 +228,11 @@ fn wait_dead(pid: &str) {
 fn route_selection_uses_only_local_prefix_or_gateway_and_no_ssh_probe() {
     let fixture = Fixture::new();
     for (facts, host) in [
-        ("address 192.168.110.12\n", "intranet.test\t22"),
-        ("address 192.168.111.254\n", "intranet.test\t22"),
-        ("address 192.168.112.1\n", "public.test\t2222"),
+        ("address 10.20.110.12\n", "intranet.test\t22"),
+        ("address 10.20.111.254\n", "intranet.test\t22"),
+        ("address 10.20.112.1\n", "public.test\t2222"),
         (
-            "address 172.16.0.12\ngateway 192.168.110.1\n",
+            "address 172.16.0.12\ngateway 10.20.110.1\n",
             "intranet.test\t22",
         ),
         ("", "public.test\t2222"),
@@ -258,7 +258,7 @@ fn route_selection_uses_only_local_prefix_or_gateway_and_no_ssh_probe() {
 #[test]
 fn malformed_prefix_fails_without_starting_transport() {
     let fixture = Fixture::new();
-    fixture.append("INBOX_INTR_PREFIX='192.168.110.0/33'");
+    fixture.append("INBOX_INTR_PREFIX='10.20.110.0/33'");
     let output = fixture
         .command("hub-ssh-proxy.sh", "hold")
         .output()
@@ -427,7 +427,7 @@ fn authentication_deadline_releases_the_lock_after_stopping_the_attempt() {
 #[test]
 fn gentle_retry_waits_with_jitter_and_reselects_from_fresh_local_facts() {
     let fixture = Fixture::new();
-    std::fs::write(fixture.root.join("facts.txt"), "address 192.168.110.2\n").unwrap();
+    std::fs::write(fixture.root.join("facts.txt"), "address 10.20.110.2\n").unwrap();
     let mut supervisor = fixture.supervisor("fail-then-hold");
     fixture.wait_rows("dial", 1, 5);
     std::fs::write(fixture.root.join("facts.txt"), "address 172.16.0.12\n").unwrap();
