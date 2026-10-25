@@ -7,6 +7,7 @@ members = [
     "crates/meshtray",
     "crates/fmesh-core",
     "crates/fmesh",
+    "crates/fmesh-desktop",
     "crates/agent-inbox",
 ]
 

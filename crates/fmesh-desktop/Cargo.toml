@@ -1,0 +1,27 @@
+[package]
+name = "fmesh-desktop"
+description = "fMesh native device and agent list (AppKit on macOS, Win32 on Windows), launched on demand"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+fmesh-core = { path = "../fmesh-core" }
+
+# Native controls only, at the versions tray-icon / tao already bring in: no webview, no GPU UI.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+dispatch2 = "0.3.1"
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSArray", "NSNotification", "NSObject", "NSGeometry", "NSThread"] }
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSApplication", "NSRunningApplication", "NSResponder", "NSView", "NSWindow", "NSControl", "NSTextField",
+    "NSSearchField", "NSSegmentedControl", "NSButton", "NSScrollView", "NSClipView", "NSTableView", "NSOutlineView",
+    "NSTableColumn", "NSPasteboard", "NSMenu", "NSMenuItem", "NSFont", "NSColor", "NSGraphics", "NSText",
+    "NSCell", "NSActionCell", "NSButtonCell", "NSTextFieldCell", "NSSearchFieldCell", "NSSegmentedCell",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse",
+] }
