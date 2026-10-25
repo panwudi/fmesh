@@ -1,0 +1,415 @@
+// fMesh device and agent list. Cards per computer, agents inside; everything the user clicks
+// answers in the status line. Colours come from the platform palette (light and dark).
+
+import { LineEdit, Button, ListView, Palette } from "std-widgets.slint";
+
+export struct AgentItem {
+    name: string,
+    short: string,
+    role: string,
+    receiving: bool,
+}
+
+export struct Stat {
+    label: string,
+    value: string,
+    ok: bool,
+}
+
+export struct DeviceItem {
+    index: int,
+    title: string,
+    me: bool,
+    shared: bool,
+    online: bool,
+    stopped: bool,
+    detail: string,
+    owner: string,
+    service: string,
+    has-agents: bool,
+    expanded: bool,
+    agents: [AgentItem],
+}
+
+global Look {
+    out property <color> ok: #30d158;
+    out property <color> warn: #ff9f0a;
+    out property <color> idle: #8e8e93;
+    out property <color> weak: Palette.foreground.transparentize(0.45);
+    out property <color> card: Palette.color-scheme == ColorScheme.dark ? #ffffff0d : #ffffffcc;
+    out property <color> card-hover: Palette.color-scheme == ColorScheme.dark ? #ffffff14 : #ffffff;
+    out property <color> page: Palette.color-scheme == ColorScheme.dark ? #1c1c1e : #f2f2f7;
+    out property <color> line: Palette.color-scheme == ColorScheme.dark ? #ffffff1a : #0000001a;
+}
+
+component Dot inherits Rectangle {
+    in property <color> tint;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: tint;
+}
+
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> tint;
+    height: 18px;
+    width: label.preferred-width + 14px;
+    border-radius: 9px;
+    background: tint.transparentize(0.82);
+    label := Text {
+        text: root.text;
+        color: root.tint;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    height: 28px;
+    width: label.preferred-width + 26px;
+    border-radius: 14px;
+    background: selected ? Palette.accent-background : (touch.has-hover ? Look.card-hover : Look.card);
+    border-width: selected ? 0px : 1px;
+    border-color: Look.line;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    label := Text {
+        text: root.text;
+        color: root.selected ? Palette.accent-foreground : Palette.foreground;
+        font-size: 12px;
+        font-weight: root.selected ? 600 : 400;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+component AgentRow inherits Rectangle {
+    in property <AgentItem> agent;
+    callback copy();
+    height: 32px;
+    border-radius: 7px;
+    background: touch.has-hover ? Palette.accent-background.transparentize(0.88) : transparent;
+    accessible-role: button;
+    accessible-label: "复制 " + agent.name;
+    accessible-action-default => { root.copy(); }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.copy(); }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Dot { tint: agent.receiving ? Look.ok : Look.idle; }
+        }
+        Text {
+            text: agent.short;
+            font-weight: 600;
+            font-size: 13px;
+            vertical-alignment: center;
+            min-width: 140px;
+        }
+        Text {
+            text: agent.role;
+            color: Look.weak;
+            font-size: 12px;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: touch.has-hover ? "点击复制" : (agent.receiving ? "可接收" : "当前不可接收");
+            color: touch.has-hover ? Palette.accent-background : Look.weak;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component DeviceCard inherits Rectangle {
+    in property <DeviceItem> device;
+    callback toggle();
+    callback copy-device();
+    callback copy-agent(int);
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Look.line;
+    background: Look.card;
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 11px;
+        padding-bottom: 11px;
+        spacing: 5px;
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Dot { tint: device.online ? Look.ok : (device.stopped ? Look.warn : Look.idle); }
+            }
+            name := Text {
+                text: device.title;
+                font-size: 15px;
+                font-weight: 700;
+                vertical-alignment: center;
+                accessible-role: button;
+                accessible-label: "复制 " + device.title;
+                accessible-action-default => { root.copy-device(); }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.copy-device(); }
+                }
+            }
+            if device.me: VerticalLayout {
+                alignment: center;
+                Badge { text: "本机"; tint: Palette.accent-background; }
+            }
+            if device.shared: VerticalLayout {
+                alignment: center;
+                Badge { text: "共享"; tint: Look.warn; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: device.owner;
+                color: device.owner == "未填写" ? Look.weak : Palette.foreground;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Text {
+                text: device.detail;
+                color: Look.weak;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: device.service;
+                color: device.has-agents ? Palette.foreground : Look.weak;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            if device.has-agents: Rectangle {
+                width: toggle-label.preferred-width + 16px;
+                height: 22px;
+                border-radius: 6px;
+                background: toggle-touch.has-hover ? Look.card-hover : transparent;
+                accessible-role: button;
+                accessible-label: toggle-label.text;
+                accessible-action-default => { root.toggle(); }
+                toggle-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle(); }
+                }
+                toggle-label := Text {
+                    text: device.expanded ? "收起 ▴" : "展开 ▾";
+                    color: Palette.accent-background;
+                    font-size: 12px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        if device.shared: Rectangle {
+            height: shared-note.preferred-height + 12px;
+            border-radius: 7px;
+            background: Look.warn.transparentize(0.88);
+            shared-note := Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: "共享 Agent: 请通过成员自己的 Agent 联系, 此标记不代表任何授权";
+                color: Palette.foreground;
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        if device.expanded: VerticalLayout {
+            padding-top: 4px;
+            spacing: 2px;
+            Rectangle { height: 1px; background: Look.line; }
+            for agent[j] in device.agents: AgentRow {
+                agent: agent;
+                copy => { root.copy-agent(j); }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "fMesh 设备与 Agent";
+    preferred-width: 980px;
+    preferred-height: 700px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Look.page;
+    default-font-size: 13px;
+
+    in property <string> summary;
+    in property <[Stat]> stats;
+    in property <bool> network-ok;
+    in property <[DeviceItem]> devices;
+    in property <[string]> filters;
+    in property <string> count;
+    in property <bool> loading;
+    in property <string> hint;
+    in property <string> note;
+    in-out property <string> query;
+    in-out property <int> filter;
+
+    callback search(string);
+    callback set-filter(int);
+    callback refresh();
+    callback toggle(int);
+    callback copy-device(int);
+    callback copy-agent(int, int);
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control || event.modifiers.meta) && (event.text == "r" || event.text == "R") {
+                root.refresh();
+                return accept;
+            }
+            if (event.modifiers.control || event.modifiers.meta) && (event.text == "f" || event.text == "F") {
+                search-box.focus();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 22px;
+            padding-bottom: 14px;
+            spacing: 14px;
+
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "设备与 Agent";
+                        font-size: 24px;
+                        font-weight: 700;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        for stat in root.stats: Rectangle {
+                            height: 26px;
+                            width: stat-row.preferred-width;
+                            border-radius: 13px;
+                            background: Look.card;
+                            border-width: 1px;
+                            border-color: Look.line;
+                            stat-row := HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Dot { tint: stat.ok ? Look.ok : Look.warn; }
+                                }
+                                Text {
+                                    text: stat.label;
+                                    color: Look.weak;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: stat.value;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: root.loading ? "正在刷新..." : "刷新";
+                        primary: true;
+                        enabled: !root.loading;
+                        clicked => { root.refresh(); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                search-box := LineEdit {
+                    placeholder-text: "搜索设备, 地址, 归属, Agent 或职责  (⌘F)";
+                    text <=> root.query;
+                    horizontal-stretch: 1;
+                    edited(text) => { root.search(text); }
+                }
+                for name[i] in root.filters: VerticalLayout {
+                    alignment: center;
+                    Chip {
+                        text: name;
+                        selected: i == root.filter;
+                        clicked => {
+                            root.filter = i;
+                            root.set-filter(i);
+                        }
+                    }
+                }
+            }
+
+            ListView {
+                vertical-stretch: 1;
+                for device[i] in root.devices: VerticalLayout {
+                    padding-bottom: 10px;
+                    DeviceCard {
+                        device: device;
+                        toggle => { root.toggle(device.index); }
+                        copy-device => { root.copy-device(device.index); }
+                        copy-agent(j) => { root.copy-agent(device.index, j); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: root.hint;
+                    font-size: 12px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.count;
+                    color: Look.weak;
+                    font-size: 12px;
+                }
+            }
+            Text {
+                text: root.note;
+                color: Look.weak;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

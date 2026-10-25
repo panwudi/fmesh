@@ -165,8 +165,9 @@ common cloud VPC ranges.
 - The menu is fixed size: this node, connection (relays x/y), other devices online x/y, Agent Mesh
   availability, then "all devices", copy address, copy diagnostics, logs, quit. Every click shows its
   result in the menu.
-- The full device and agent list must be a native window (see `docs/ui.md` when written). The current
-  HTML snapshot in `meshtray` is an interim reference and will be replaced, not wrapped in a WebView.
+- The full device and agent list is `fmesh-desktop`, a Slint window (Cupertino style on macOS, Fluent
+  on Windows, software renderer) started on demand by the tray and gone when closed. Measured on
+  macOS: 10.9 MB binary, 58 MB footprint while open. There is no HTML list any more.
 - A stale status file (older than 10 s) means `meshd` is not running; never show old counts as live.
 - Headless machines use `meshd status --summary`.
 - Wording: no announcement is "not discovered", not "not installed". A node name is a device, not a

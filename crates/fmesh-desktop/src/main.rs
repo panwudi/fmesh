@@ -1,16 +1,12 @@
-//! fmesh-desktop: the full device and agent list in a native window (AppKit on macOS, Win32
-//! on Windows). Started on demand by the tray or `fmesh desktop`; closing the window ends the
-//! process, so nothing stays resident. Data comes from fmesh-core, the same model as
-//! `fmesh devices`, loaded off the UI thread; every action shows its result in the window.
+//! fmesh-desktop: the full device and agent list in one Slint window (Cupertino look on
+//! macOS, Fluent on Windows). Started on demand by the tray or `fmesh desktop`; closing the
+//! window ends the process, so nothing stays resident. Data comes from fmesh-core, the same
+//! model as `fmesh devices`, loaded off the UI thread; every action answers in the window.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod model;
-
-#[cfg(target_os = "macos")]
-mod mac;
-#[cfg(windows)]
-mod win;
+mod ui;
 
 use fmesh_core::view::View;
 use fmesh_core::{directory, labels, status, view};
@@ -24,13 +20,8 @@ pub fn load() -> View {
 }
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    mac::run();
-    #[cfg(windows)]
-    win::run();
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        eprintln!("fmesh-desktop: no native list on this platform; use `fmesh devices`");
-        std::process::exit(2);
+    if let Err(e) = ui::run() {
+        eprintln!("fmesh-desktop: {e}");
+        std::process::exit(1);
     }
 }

@@ -1,14 +1,10 @@
-//! What the native list shows, independent of the toolkit: which devices are visible, the
-//! text of every cell, what a copy puts on the clipboard and what the status line says. The
-//! macOS and Windows windows only draw this.
+//! What the list shows, independent of the toolkit: which devices are visible and expanded,
+//! what a copy puts on the clipboard and what the status line says.
 
-use fmesh_core::view::{Device, Filter, View, SHARED_NOTE};
+use fmesh_core::view::{Filter, View};
 
-pub const COLUMNS: [&str; 5] = ["设备 / Agent", "状态", "路径 / 职责", "归属", "Agent 服务"];
 pub const FILTERS: [(&str, Filter); 4] =
     [("全部", Filter::All), ("在线", Filter::Online), ("离线", Filter::Offline), ("有 Agent 服务", Filter::AgentService)];
-pub const SEARCH_HINT: &str = "搜索设备, 地址, 归属, Agent 或职责";
-pub const TITLE: &str = "fMesh 设备与 Agent";
 pub const NOTE: &str = "\"未发现\" 不代表没装; \"可接收\" 不代表有人在电脑前, 也不代表模型已处理消息. 归属是本机登记的展示信息, 不是权限.";
 
 /// A visible row: a device, or one of its agents.
@@ -28,28 +24,6 @@ pub fn expand(view: &View, query: &str) -> Vec<usize> {
     (0..view.devices.len()).filter(|&i| view.devices[i].matches_agent(query)).collect()
 }
 
-pub fn cells(view: &View, row: Row) -> [String; 5] {
-    let d = &view.devices[row.device];
-    match row.agent {
-        None => device_cells(d),
-        Some(a) => {
-            let a = &d.agent_list()[a];
-            let short = a.name.split_once('.').map_or(a.name.as_str(), |(_, s)| s);
-            let role = if a.role.is_empty() { "职责未填写".to_string() } else { a.role.clone() };
-            let state = if a.receiving { "可接收" } else { "当前不可接收" };
-            [short.to_string(), state.into(), role, String::new(), a.name.clone()]
-        }
-    }
-}
-
-fn device_cells(d: &Device) -> [String; 5] {
-    let name = if d.me { format!("{} (本机)", d.mesh_name) } else { d.mesh_name.clone() };
-    let state = if d.me || d.handshake_secs.is_none() { d.state_text().to_string() } else { format!("{} · {}", d.state_text(), d.handshake_text()) };
-    let path = if d.ip.is_empty() { d.path.clone() } else { format!("{} · {}", d.ip, d.path) };
-    let owner = if d.shared && !d.owner_text().contains("共享") { format!("{} · 共享", d.owner_text()) } else { d.owner_text().to_string() };
-    [name, state, path, owner, d.agents_text()]
-}
-
 /// What a copy of this row puts on the clipboard: `<name>.mesh` or the agent address.
 pub fn copy_text(view: &View, row: Row) -> String {
     let d = &view.devices[row.device];
@@ -66,15 +40,6 @@ pub fn copied(view: &View, row: Row) -> String {
         format!("已复制 {text}. 请交给自己的 Agent 转交, 不要直接联系共享 Agent.")
     } else {
         format!("已复制 {text}")
-    }
-}
-
-/// The status line for a selected row (nothing selected: counts).
-pub fn hint(view: &View, row: Option<Row>, shown: usize) -> String {
-    match row {
-        Some(r) if view.devices[r.device].shared => SHARED_NOTE.to_string(),
-        Some(r) => format!("双击或按 ⌘C / Ctrl+C 复制 {}", copy_text(view, r)),
-        None => format!("显示 {shown} / {} 台", view.devices.len()),
     }
 }
 
@@ -112,25 +77,11 @@ mod tests {
     }
 
     #[test]
-    fn cells_for_devices_and_agents() {
-        let v = sample();
-        assert_eq!(cells(&v, Row { device: 0, agent: None })[0], "laptop1.mesh (本机)");
-        assert_eq!(cells(&v, Row { device: 0, agent: None })[3], "成员 A");
-        assert_eq!(cells(&v, Row { device: 1, agent: None })[3], "未填写 · 共享");
-        assert_eq!(cells(&v, Row { device: 2, agent: None })[4], "设备离线, Agent 状态未知");
-        let a = cells(&v, Row { device: 0, agent: Some(0) });
-        assert_eq!((a[0].as_str(), a[1].as_str(), a[2].as_str()), ("main", "可接收", "review"));
-        assert_eq!(cells(&v, Row { device: 1, agent: Some(0) })[2], "职责未填写");
-    }
-
-    #[test]
     fn copies_and_feedback() {
         let v = sample();
         assert_eq!(copy_text(&v, Row { device: 1, agent: None }), "server1.mesh");
         assert_eq!(copied(&v, Row { device: 0, agent: Some(0) }), "已复制 laptop1.main");
         assert!(copied(&v, Row { device: 1, agent: Some(0) }).contains("交给自己的 Agent"));
-        assert_eq!(hint(&v, Some(Row { device: 1, agent: None }), 3), SHARED_NOTE);
-        assert_eq!(hint(&v, None, 2), "显示 2 / 3 台");
     }
 
     #[test]
