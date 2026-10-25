@@ -1,0 +1,22 @@
+[package]
+name = "meshd"
+description = "flytoMesh node daemon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+meshproto.workspace = true
+boringtun.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Bindings only (no runtime code): wintun loading, WSAPoll, socket options.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }

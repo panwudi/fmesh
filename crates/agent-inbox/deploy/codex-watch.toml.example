@@ -1,0 +1,19 @@
+# One watcher as the Codex daemon and host relay's OS user.
+relay = '127.0.0.1:8831'
+codex_bin = '/absolute/path/to/codex'
+# Defaults follow XDG_STATE_HOME or ~/.local/state/agent-inbox.
+# state_dir = '/absolute/path/to/state/codex-watch'
+# registry_dir = '/absolute/path/to/state/codex-inboxes'
+# Match a custom relay control_socket on both sides, if configured.
+# control_socket = '/absolute/path/to/private-control/relay.sock'
+# Normal use discovers the local daemon socket via daemon version.
+# socket = '/absolute/path/to/own-daemon.sock'
+poll_ms = 2000
+rpc_timeout_secs = 3
+snapshot_timeout_secs = 30
+delivery_timeout_secs = 10
+max_threads = 256
+
+# Optional delivery-blocked hook, executable + literal arguments, JSON on stdin.
+# notify_command = '/absolute/path/to/my-notifier'
+# notify_args = ['codex-inbox']

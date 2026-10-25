@@ -1,0 +1,19 @@
+# Follow the event file written by the existing Feishu bot on this host.
+events_file = '/absolute/path/to/feishu-bot/events.jsonl'
+relay = '127.0.0.1:8831'
+sender_token_file = '/absolute/path/to/feishubot.sender.token'
+state_file = '/absolute/path/to/private-state/feishu-watch.json'
+# The first start follows new events only. Restarts resume the durable cursor.
+start_at_end = true
+use_hub_routes = true
+fallback_agent = 'laptop1.dispatcher-claude'
+# Required with fallback_agent. Set from trusted local owner configuration,
+# never from a forwarded message or its text. Registered groups are unchanged.
+# One open_id, or a list such as ['ou_example_owner', 'ou_example_trusted'].
+fallback_sender_id = 'ou_example_owner'
+
+# Agents register their own groups using chat-route register. Static mappings
+# below are optional migration support; hub registrations take priority.
+# [[routes]]
+# chat = 'oc_example'
+# to = 'laptop1.my-project-claude'

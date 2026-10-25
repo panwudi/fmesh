@@ -1,0 +1,4 @@
+# One independent key per session. Replace each key blob with that session's .pub field.
+# The permitlisten port must equal that session's explicit -R loopback bind.
+restrict,port-forwarding,permitlisten="127.0.0.1:8817",permitopen="127.0.0.1:8811",command="/usr/sbin/nologin" ssh-ed25519 REPLACE_WITH_CLAUDE_SESSION_PUBLIC_KEY my-pair-claude
+restrict,port-forwarding,permitlisten="127.0.0.1:8819",permitopen="127.0.0.1:8811",command="/usr/sbin/nologin" ssh-ed25519 REPLACE_WITH_CODEX_SESSION_PUBLIC_KEY my-pair-codex

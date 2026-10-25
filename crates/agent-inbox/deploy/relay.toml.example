@@ -1,0 +1,34 @@
+# Copy once per host. Fill absolute paths before starting the service.
+host = 'laptop1'
+hub = '127.0.0.1:8821'
+host_token_file = 'tokens/laptop1.host.token'
+journal = '/absolute/path/to/state/relay.md'
+state_dir = '/absolute/path/to/state'
+tunnel_script = '/absolute/path/to/deploy/agent-inbox-tunnels.sh'
+tunnel_env = 'host-tunnel.env'
+directory_report_secs = 15
+# Claude auto-join uses a same-user private Unix control socket. These settings
+# are optional; if overriding the path, match --control-socket in the MCP entry.
+# control_socket = '/absolute/path/to/private-control/relay.sock'
+# session_ttl_secs = 45
+# Static entries below remain optional when sessions join automatically.
+
+[[agents]]
+name = 'main-review'
+description = 'Reviews host networking and relay deployments'
+inbox = '127.0.0.1:8797'
+token_file = 'tokens/claude.inbox.token'
+sender_token_file = 'tokens/claude.sender.token'
+
+[[agents]]
+name = 'inbox-codex'
+description = 'Builds agent-inbox and owns its tests'
+inbox = '127.0.0.1:8799'
+token_file = 'tokens/codex.inbox.token'
+sender_token_file = 'tokens/codex.sender.token'
+
+# Services that only send need neither an inbox nor an inbox token.
+[[agents]]
+name = 'feishubot'
+description = 'Forwards configured chat messages from the existing Feishu bot'
+sender_token_file = 'tokens/feishubot.sender.token'

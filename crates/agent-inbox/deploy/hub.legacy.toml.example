@@ -1,0 +1,18 @@
+# Credentials are paths, never token values.
+[[senders]]
+name = "my-pair-claude"
+token_file = "tokens/my-pair-claude.hub.token"
+
+[[senders]]
+name = "my-pair-codex"
+token_file = "tokens/my-pair-codex.hub.token"
+
+[[peers]]
+name = "my-pair-claude"
+inbox = "127.0.0.1:8817"
+token_file = "tokens/my-pair-claude.inbox.token"
+
+[[peers]]
+name = "my-pair-codex"
+inbox = "127.0.0.1:8819"
+token_file = "tokens/my-pair-codex.inbox.token"

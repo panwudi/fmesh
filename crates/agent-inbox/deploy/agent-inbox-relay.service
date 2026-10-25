@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Inbox host relay and shared tunnel
+After=network.target
+
+[Service]
+Type=exec
+User=agent-inbox
+Group=agent-inbox
+EnvironmentFile=/etc/agent-inbox/relay.env
+ExecStart=/usr/local/bin/agent-inbox relay --listen ${AGENT_INBOX_RELAY_LISTEN} --config /etc/agent-inbox/relay.toml --state-dir /var/lib/agent-inbox-relay
+Restart=always
+RestartSec=15
+UMask=0077
+StateDirectory=agent-inbox-relay
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

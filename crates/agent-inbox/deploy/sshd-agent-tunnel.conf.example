@@ -1,0 +1,19 @@
+# Owner installs this drop-in after checking the effective sshd configuration.
+Match User agent-tunnel
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile /etc/ssh/agent-tunnel.authorized_keys
+    ForceCommand /usr/sbin/nologin
+    MaxSessions 0
+    PermitTTY no
+    PermitUserRC no
+    AllowAgentForwarding no
+    X11Forwarding no
+    AllowTcpForwarding yes
+    AllowStreamLocalForwarding no
+    PermitTunnel no
+    GatewayPorts no
+
+Match all

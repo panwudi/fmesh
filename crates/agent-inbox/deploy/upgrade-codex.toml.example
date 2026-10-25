@@ -1,0 +1,17 @@
+# Run as the daemon/inbox owner, with the same registry for every Codex inbox.
+codex_bin = "/absolute/path/to/codex"
+registry_dir = "/absolute/path/to/state/codex-inboxes"
+settings_file = "/absolute/path/to/.codex/app-server-daemon/settings.json"
+max_wait_secs = 7200
+poll_ms = 1000
+command_timeout_secs = 600
+ready_timeout_secs = 120
+
+# Optional. Executed directly, without a shell. JSON report is written to stdin.
+# notify_command = "/absolute/path/to/my-notifier"
+# notify_args = ["codex-upgrades"]
+
+# Default: curl fetches stable metadata from the official OpenAI GitHub release.
+# Override for an owner-managed mirror or tests; stdout must be JSON containing
+# version ("0.163.0") or tag_name ("rust-v0.163.0"). No prereleases or drafts.
+# latest_command = ["/absolute/path/to/release-checker"]

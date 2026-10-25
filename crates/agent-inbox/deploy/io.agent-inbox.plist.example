@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.agent-inbox</string>
+  <key>ProgramArguments</key><array>
+    <string>/absolute/path/to/agent-inbox</string><string>daemon</string>
+    <string>--config</string><string>/absolute/path/to/daemon.toml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>ExitTimeOut</key><integer>20</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>/absolute/path/to/state/desktop.out.log</string>
+  <key>StandardErrorPath</key><string>/absolute/path/to/state/desktop.err.log</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict></plist>

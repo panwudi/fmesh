@@ -1,0 +1,20 @@
+# flytoMesh relay. Files in /etc/flytomesh: key, admin.pub, roster (see docs/design.md).
+# Node events (optional, no channel built in): add `--event-url URL` and / or `--event-cmd CMD`
+# to ExecStart; see `mesh-relay` usage and docs/design.md.
+[Unit]
+Description=flytoMesh relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/flytomesh/mesh-relay run --dir /etc/flytomesh
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

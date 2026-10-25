@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for a Codex update hourly at minute 17
+
+[Timer]
+OnCalendar=*-*-* *:17:00
+Unit=agent-inbox-upgrade-codex.service
+
+[Install]
+WantedBy=timers.target

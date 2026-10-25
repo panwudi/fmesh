@@ -1,0 +1,9 @@
+# One watcher for Grok Build sessions hosted by the current OS user's leader.
+relay = '127.0.0.1:8831'
+state_dir = '/absolute/path/to/agent-inbox/grok-watch/state'
+control_socket = '/absolute/path/to/agent-inbox/local-control/relay-8831.sock'
+grok_bin = '/absolute/path/to/grok'
+leader_socket = '/absolute/path/to/.grok/leader.sock'
+poll_ms = 2000
+rpc_timeout_secs = 5
+max_sessions = 128

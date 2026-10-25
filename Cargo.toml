@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/meshproto",
+    "crates/meshd",
+    "crates/mesh-relay",
+    "crates/meshtray",
+    "crates/agent-inbox",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+meshproto = { path = "crates/meshproto" }
+# Noise core only: no tokio, no device module. Data AEAD uses ring (assembly).
+boringtun = { version = "0.7.1", default-features = false }
+# Already pulled in by boringtun; used directly for Ed25519, HKDF and ChaCha20-Poly1305.
+ring = "0.17"
+libc = "0.2"
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+
+# Release keeps unwinding: agent-inbox serves each connection on its own thread, and a
+# panic there should end only that thread, not the whole relay.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Network Mesh binaries (meshd, mesh-relay): extreme performance and small size,
+# abort on panic (no unwinding tables). Output goes to target/<triple>/mesh/.
+[profile.mesh]
+inherits = "release"
+panic = "abort"
+
+# Size-first variant, used only to compare against mesh.
+[profile.min]
+inherits = "mesh"
+opt-level = "z"

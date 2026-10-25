@@ -1,0 +1,10 @@
+[package]
+name = "mesh-relay"
+description = "flytoMesh relay: rendezvous, STUN, encrypted packet forwarding, liveness alerts"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+meshproto.workspace = true
+boringtun.workspace = true

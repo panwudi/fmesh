@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent Inbox host relay for this user's sessions
+After=network.target
+
+[Service]
+Type=exec
+EnvironmentFile=%h/.config/agent-inbox/relay.env
+ExecStart=%h/.local/bin/agent-inbox relay --listen ${AGENT_INBOX_RELAY_LISTEN} --config %h/.config/agent-inbox/relay.toml
+Restart=always
+RestartSec=15
+UMask=0077
+
+[Install]
+WantedBy=default.target

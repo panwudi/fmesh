@@ -1,0 +1,7 @@
+{
+  "owners": {
+    "laptop": "Device user",
+    "build-server": "Development team"
+  },
+  "shared_hosts": ["build-server"]
+}

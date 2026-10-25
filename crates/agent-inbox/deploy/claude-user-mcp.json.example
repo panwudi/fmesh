@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-inbox-join": {
+      "type": "stdio",
+      "command": "/absolute/path/to/agent-inbox",
+      "args": ["claude", "--relay", "127.0.0.1:8831"]
+    }
+  }
+}

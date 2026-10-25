@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Inbox desktop service
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/agent-inbox daemon --config %h/.config/agent-inbox/daemon.toml
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=default.target

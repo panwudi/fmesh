@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Inbox automatic registration for loaded Codex threads
+After=agent-inbox-relay.user.service
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/agent-inbox codex-watch --config %h/.config/agent-inbox/codex-watch.toml
+Restart=always
+RestartSec=15
+TimeoutStopSec=10
+UMask=0077
+# User unit. The daemon, relay and watcher must share the same OS user.
+
+[Install]
+WantedBy=default.target

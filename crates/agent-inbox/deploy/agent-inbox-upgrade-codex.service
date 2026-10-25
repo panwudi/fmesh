@@ -1,0 +1,10 @@
+[Unit]
+Description=Upgrade the user's Codex daemon between turns
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/agent-inbox upgrade-codex --config %h/.config/agent-inbox/upgrade-codex.toml
+UMask=0077
+TimeoutStartSec=3h
+# User unit: Codex lifecycle commands must run as the daemon owner.
+# Avoid PrivateTmp or home restrictions that hide existing inbox sockets/state.

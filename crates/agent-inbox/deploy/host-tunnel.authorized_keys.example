@@ -1,0 +1,2 @@
+# One independent host key, configured by the relay owner on the hub host.
+restrict,port-forwarding,permitlisten="127.0.0.1:8827",permitopen="127.0.0.1:8811",command="/usr/sbin/nologin" ssh-ed25519 REPLACE_WITH_HOST_PUBLIC_KEY laptop1-host-relay

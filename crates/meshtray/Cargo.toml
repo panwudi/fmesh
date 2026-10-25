@@ -1,0 +1,13 @@
+[package]
+name = "meshtray"
+description = "flytoMesh tray icon (macOS menu bar / Windows notification area): reads meshd's status file"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Native tray only (no webview, no GPU UI): measured 0.8 MB binary, 9 MB footprint (2026-10-16).
+tao = "0.37.1"
+tray-icon = "0.26.1"
+# On-demand agent directory and explicit local device labels, not network protocol state.
+serde_json = "1.0"

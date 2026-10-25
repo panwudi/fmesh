@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Inbox logical-name relay
+After=network.target
+
+[Service]
+Type=exec
+User=agent-inbox
+Group=agent-inbox
+EnvironmentFile=/etc/agent-inbox/hub.env
+ExecStart=/usr/local/bin/agent-inbox hub --listen ${AGENT_INBOX_HUB_LISTEN} --config /etc/agent-inbox/hub.toml --log /var/lib/agent-inbox/hub.md
+Restart=always
+RestartSec=7
+UMask=0077
+StateDirectory=agent-inbox
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

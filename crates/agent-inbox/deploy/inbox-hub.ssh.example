@@ -1,0 +1,9 @@
+Host inbox-hub
+    User agent-tunnel
+    HostName 127.0.0.1
+    ProxyCommand /absolute/path/to/deploy/hub-ssh-proxy.sh --config /absolute/path/to/tunnel.env
+    BatchMode yes
+    StrictHostKeyChecking yes
+    HostKeyAlias inbox-hub
+    ControlMaster no
+    ControlPath none

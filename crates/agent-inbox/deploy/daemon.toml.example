@@ -1,0 +1,17 @@
+# One desktop service, preserving the existing relay and watcher configuration.
+# Relative paths are resolved against this file, not the service manager's cwd.
+state_dir = 'state/desktop-daemon'
+
+[relay]
+listen = '127.0.0.1:8831'
+config = 'host/relay.toml'
+# For a local-only or separately managed tunnel, explicitly set:
+# no_tunnel = true
+
+# Omit this section on a Claude-only host.
+[codex_watch]
+config = 'codex-watch/codex-watch.toml'
+
+# Optional, when Grok Build runs through its shared leader.
+# [grok_watch]
+# config = 'grok-watch/grok-watch.toml'

@@ -1,0 +1,18 @@
+[Unit]
+Description=Forward the existing Feishu bot journal to agent inboxes
+After=network.target feishu-bot.service agent-inbox-relay.service
+
+[Service]
+Type=exec
+User=agent-inbox
+Group=agent-inbox
+ExecStart=/usr/local/bin/agent-inbox feishu-watch --config /etc/agent-inbox/feishu-watch.toml
+Restart=on-failure
+RestartSec=7
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agent-inbox-feishu
+
+[Install]
+WantedBy=multi-user.target

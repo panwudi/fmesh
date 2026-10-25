@@ -1,0 +1,15 @@
+# flytoMesh node on Linux. Files in /etc/flytomesh: key, admin.pub, roster.
+# meshd exits after taking a newer roster from a relay; Restart=always brings it back.
+[Unit]
+Description=flytoMesh node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/flytomesh/meshd up
+Restart=always
+RestartSec=2
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.agent-inbox.upgrade-codex</string>
+  <key>ProgramArguments</key><array>
+    <string>/absolute/path/to/agent-inbox</string><string>upgrade-codex</string>
+    <string>--config</string><string>/absolute/path/to/upgrade-codex.toml</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Minute</key><integer>17</integer></dict>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>/absolute/path/to/state/upgrade.out.log</string>
+  <key>StandardErrorPath</key><string>/absolute/path/to/state/upgrade.err.log</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict></plist>

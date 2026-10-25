@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>agent-inbox</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #eaf0ee;
+      --paper: #f9fbfa;
+      --ink: #213941;
+      --muted: #60777d;
+      --line: #cbd8d5;
+      --accent: #146f68;
+      --accent-soft: #deeeea;
+      --amber: #a96726;
+      --red: #aa423f;
+      --font: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      --mono: "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--canvas); color: var(--ink); font-family: var(--font); }
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .62; }
+    :focus-visible { outline: 3px solid #d18b3f; outline-offset: 3px; }
+    .shell { width: min(1220px, calc(100vw - 48px)); margin: 0 auto; padding: 35px 0 44px; }
+    .masthead { display: flex; justify-content: space-between; align-items: end; gap: 22px; padding-bottom: 25px; border-bottom: 1px solid #9db4b1; }
+    .wordmark { display: flex; align-items: center; gap: 15px; }
+    .mark { width: 42px; height: 42px; background: var(--accent); display: grid; place-items: center; border-radius: 12px 12px 12px 3px; }
+    .mark i { display: block; width: 20px; height: 16px; border: 2px solid white; border-radius: 3px; position: relative; }
+    .mark i::after { content: ""; position: absolute; left: 3px; right: 3px; top: 5px; border-top: 2px solid white; transform: rotate(-17deg); }
+    h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -.055em; line-height: 1; font-weight: 700; }
+    .tagline { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+    .connection { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .connection-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #c1c9c8; box-shadow: 0 0 0 4px #dfe8e5; }
+    .connection-dot.ok { background: #2e9180; box-shadow: 0 0 0 4px #d0e9df; }
+    .connection-dot.bad { background: var(--red); box-shadow: 0 0 0 4px #f1dedd; }
+    .workspace { display: grid; grid-template-columns: minmax(310px, .94fr) minmax(420px, 1.4fr); height: min(760px, calc(100vh - 180px)); min-height: 560px; margin-top: 24px; background: var(--paper); border: 1px solid #c8d5d1; border-radius: 16px; overflow: hidden; box-shadow: 0 16px 36px rgba(34, 76, 74, .07); }
+    .directory { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+    .panel-heading { padding: 27px 28px 18px; }
+    .heading-line { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    h2 { margin: 0; font-size: 21px; line-height: 1.2; letter-spacing: -.025em; }
+    .count { font-family: var(--mono); color: var(--accent); font-size: 12px; }
+    .description { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .search-line { display: flex; gap: 9px; margin-top: 20px; }
+    .search-line input { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; background: white; color: var(--ink); font-size: 13px; }
+    .quiet-button { border: 1px solid var(--line); background: #edf3f0; color: var(--ink); border-radius: 9px; padding: 0 14px; font-size: 13px; font-weight: 600; }
+    .quiet-button:hover { background: #dfece7; }
+    .list { overflow: auto; flex: 1; padding: 0 13px 18px; }
+    .host { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 13px; margin-top: 5px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
+    .host:hover { background: #eef4f1; }
+    .host:disabled { cursor: default; opacity: 1; }
+    .host:disabled:hover { background: transparent; }
+    .host-name { font: 700 14px var(--mono); }
+    .host-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .host-toggle { display: inline-block; margin-left: 8px; color: var(--accent); font-size: 12px; min-width: 2em; text-align: right; }
+    .host-rows { margin: 0 0 11px 11px; padding-left: 12px; border-left: 2px solid #d3e2dd; }
+    .agent { display: grid; width: 100%; grid-template-columns: 16px 1fr auto; align-items: start; gap: 9px; text-align: left; border: 1px solid transparent; border-bottom-color: #e3eae8; background: transparent; color: var(--ink); padding: 14px 13px; border-radius: 8px; }
+    .agent:hover { background: #edf5f2; }
+    .agent[aria-pressed="true"] { background: var(--accent-soft); border-color: #9ac9bd; }
+    .agent-dot { width: 8px; height: 8px; border-radius: 50%; background: #b6c3c0; margin-top: 5px; }
+    .agent-dot.online { background: #278977; }
+    .agent-name { font: 600 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+    .agent-description { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; line-height: 1.35; }
+    .agent-state { font-size: 11px; color: var(--muted); padding-top: 2px; }
+    .agent-state.online { color: var(--accent); }
+    .empty { padding: 26px 16px; color: var(--muted); line-height: 1.6; font-size: 13px; }
+    .compose { display: flex; flex-direction: column; padding: clamp(26px, 4vw, 44px); }
+    .compose-top { padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+    .compose-top .description { max-width: 46ch; }
+    .recipient-label, .message-label { display: block; margin: 29px 0 9px; font-weight: 700; font-size: 13px; }
+    .recipient { display: flex; align-items: center; min-height: 53px; padding: 12px 16px; background: #e8f3ef; border: 1px solid #a8cec2; border-radius: 9px; font: 600 13px var(--mono); overflow-wrap: anywhere; }
+    .recipient.empty-recipient { background: #f1f4f3; border-color: var(--line); color: var(--muted); font-family: var(--font); font-weight: 400; }
+    textarea { display: block; width: 100%; min-height: 200px; resize: vertical; background: white; border: 1px solid #b8cbc6; border-radius: 10px; padding: 16px; color: var(--ink); font-size: 14px; line-height: 1.65; }
+    textarea::placeholder { color: #8b9d9d; }
+    .below-message { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .actions { display: flex; align-items: center; gap: 20px; margin-top: 28px; }
+    .send { background: var(--accent); color: white; border: 1px solid var(--accent); border-radius: 9px; padding: 13px 20px; min-width: 132px; font-weight: 700; }
+    .send:hover:not(:disabled) { background: #0d5d56; }
+    .action-hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .feedback { margin-top: 25px; padding: 15px 17px; border-radius: 9px; font-size: 13px; line-height: 1.55; border: 1px solid var(--line); background: #eef4f1; }
+    .feedback[hidden] { display: none; }
+    .feedback.ok { border-color: #96cbb9; background: #e4f4eb; color: #135e4b; }
+    .feedback.warn { border-color: #e0c093; background: #fff4e5; color: #7f4b18; }
+    .feedback.bad { border-color: #ddb1ad; background: #fff0ee; color: #913a34; }
+    .footer { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 16px; }
+    @media (max-width: 790px) {
+      .shell { width: min(100% - 24px, 620px); padding-top: 21px; }
+      .masthead { align-items: start; }
+      .workspace { display: block; height: auto; min-height: 0; }
+      .directory { border-right: 0; border-bottom: 1px solid var(--line); max-height: 430px; }
+      .list { max-height: 280px; }
+      .compose { padding: 26px; }
+      .footer { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div class="wordmark"><span class="mark" aria-hidden="true"><i></i></span><div><h1>agent-inbox</h1><p class="tagline">给正在工作的 agent 发消息</p></div></div>
+      <div class="connection" role="status"><span id="connectionDot" class="connection-dot"></span><span id="connectionText">正在连接</span></div>
+    </header>
+    <main class="workspace" id="app">
+      <aside class="directory" aria-label="Agent 列表">
+        <div class="panel-heading">
+          <div class="heading-line"><h2>收件人</h2><span class="count" id="count">--</span></div>
+          <p class="description">按名字或职责找到当前会话。</p>
+          <div class="search-line"><input id="search" type="search" placeholder="搜索 agent" aria-label="搜索 agent"><button class="quiet-button" id="refresh" type="button">刷新</button></div>
+        </div>
+        <div class="list" id="agents"><div class="empty">正在读取 agent 列表...</div></div>
+      </aside>
+      <section class="compose" aria-label="发送消息">
+        <div class="compose-top"><h2>发送消息</h2><p class="description">选择收件人并写下任务或问题。发送后会显示接收端的确认状态。</p></div>
+        <form id="sendForm">
+          <label class="recipient-label">收件人</label>
+          <div id="recipient" class="recipient empty-recipient" role="status">先从左侧选择一个 agent</div>
+          <label class="message-label" for="message">消息</label>
+          <textarea id="message" placeholder="写下需要对方处理的事..." maxlength="65536"></textarea>
+          <div class="below-message"><span>消息最多 64 KiB</span><span id="size">0 B</span></div>
+          <div class="actions"><button class="send" id="sendButton" type="submit">发送消息</button><span class="action-hint">“已接受”表示进入对方的接收流程，处理结果需要对方回复。</span></div>
+        </form>
+        <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+    </main>
+    <footer class="footer"><span>在线表示会话入口可达，不代表有人正盯着屏幕。</span><span id="senderIdentity">正在读取发送身份</span></footer>
+  </div>
+  <script>
+    const ui = {
+      agents: document.getElementById('agents'), count: document.getElementById('count'),
+      search: document.getElementById('search'), refresh: document.getElementById('refresh'),
+      recipient: document.getElementById('recipient'), message: document.getElementById('message'),
+      size: document.getElementById('size'), form: document.getElementById('sendForm'),
+      send: document.getElementById('sendButton'), feedback: document.getElementById('feedback'),
+      connectionText: document.getElementById('connectionText'), connectionDot: document.getElementById('connectionDot'),
+      senderIdentity: document.getElementById('senderIdentity')
+    };
+    let csrf = null;
+    let rows = [];
+    let selected = null;
+    const expandedHosts = new Set();
+    const bytes = text => new TextEncoder().encode(text).length;
+    function feedback(text, kind = '') {
+      ui.feedback.hidden = false;
+      ui.feedback.className = `feedback ${kind}`;
+      ui.feedback.textContent = text;
+    }
+    function connection(text, kind = '') {
+      ui.connectionText.textContent = text;
+      ui.connectionDot.className = `connection-dot ${kind}`;
+    }
+    function render() {
+      const query = ui.search.value.trim().toLowerCase();
+      const shown = rows.filter(row => `${row.name} ${row.description || ''}`.toLowerCase().includes(query));
+      ui.count.textContent = `${shown.filter(row => !row.host_marker).length} / ${rows.filter(row => !row.host_marker).length}`;
+      ui.agents.replaceChildren();
+      if (!shown.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = rows.length ? '没有匹配的 agent。试试别的名字或清空搜索。' : '目前没有可用的 agent。稍后刷新列表。';
+        ui.agents.append(empty);
+        return;
+      }
+      const grouped = new Map();
+      for (const row of shown) {
+        const host = row.name.includes('.') ? row.name.split('.')[0] : '未分组';
+        if (!grouped.has(host)) grouped.set(host, []);
+        grouped.get(host).push(row);
+      }
+      for (const [host, members] of [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const opened = query.length > 0 || expandedHosts.has(host);
+        const agents = members.filter(row => !row.host_marker);
+        const unavailable = members.some(row => row.host_marker);
+        const onlineCount = agents.filter(row => row.host_online !== false && row.inbox_reachable !== false && row.status === 'online').length;
+        const groupButton = document.createElement('button');
+        groupButton.type = 'button'; groupButton.className = 'host'; groupButton.setAttribute('aria-expanded', String(opened));
+        groupButton.disabled = query.length > 0;
+        const hostName = document.createElement('span'); hostName.className = 'host-name'; hostName.textContent = host;
+        const hostMeta = document.createElement('span'); hostMeta.className = 'host-meta';
+        hostMeta.textContent = unavailable ? '电脑暂不可达' : `${onlineCount} 在线 / ${agents.length}`;
+        const toggle = document.createElement('span'); toggle.className = 'host-toggle'; toggle.textContent = query ? '匹配' : (opened ? '收起' : '展开');
+        hostMeta.append(toggle);
+        groupButton.append(hostName, hostMeta);
+        groupButton.addEventListener('click', () => {
+          if (expandedHosts.has(host)) expandedHosts.delete(host); else expandedHosts.add(host);
+          render();
+        });
+        ui.agents.append(groupButton);
+        if (!opened) continue;
+        const memberList = document.createElement('div'); memberList.className = 'host-rows';
+        if (unavailable) {
+          const note = document.createElement('div'); note.className = 'empty';
+          note.textContent = '此电脑暂时无法连接，agent 名单不可用。';
+          memberList.append(note);
+        }
+        for (const row of agents) {
+        const online = row.host_online !== false && row.inbox_reachable !== false && row.status === 'online';
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'agent'; button.setAttribute('aria-pressed', String(selected === row.name));
+        const dot = document.createElement('span'); dot.className = `agent-dot ${online ? 'online' : ''}`;
+        const detail = document.createElement('span');
+        const name = document.createElement('span'); name.className = 'agent-name'; name.textContent = row.name.startsWith(`${host}.`) ? row.name.slice(host.length + 1) : row.name;
+        const description = document.createElement('span'); description.className = 'agent-description'; description.textContent = row.description || '没有描述';
+        detail.append(name, description);
+        const state = document.createElement('span'); state.className = `agent-state ${online ? 'online' : ''}`;
+        state.textContent = online ? '在线' : '离线';
+        button.append(dot, detail, state);
+        button.addEventListener('click', () => {
+          selected = row.name;
+          expandedHosts.add(host);
+          ui.recipient.textContent = row.name;
+          ui.recipient.classList.remove('empty-recipient');
+          feedback(`已选择 ${row.name}。`, 'ok');
+          render();
+          ui.message.focus();
+        });
+        memberList.append(button);
+        }
+        ui.agents.append(memberList);
+      }
+    }
+    async function refresh(manual = false) {
+      ui.refresh.disabled = true; ui.refresh.textContent = '刷新中...';
+      connection('正在读取目录');
+      try {
+        const response = await fetch('/api/agents', {cache: 'no-store'});
+        if (!response.ok) throw new Error('目录暂时不可用');
+        rows = (await response.json()).agents;
+        let missingRecipient = false;
+        if (selected && !rows.some(row => row.name === selected)) {
+          const missing = selected;
+          selected = null;
+          missingRecipient = true;
+          ui.recipient.textContent = '先从左侧选择一个 agent';
+          ui.recipient.classList.add('empty-recipient');
+          feedback(`收件人 ${missing} 已不在目录中，请重新选择。`, 'warn');
+        }
+        render();
+        connection('目录已连接', 'ok');
+        if (manual && !missingRecipient) feedback(`目录已更新，共 ${rows.length} 个 agent。`, 'ok');
+      } catch (error) {
+        connection('目录连接失败', 'bad');
+        feedback('无法读取 agent 列表。检查本机 relay 后重试刷新。', 'bad');
+      } finally {
+        ui.refresh.disabled = false; ui.refresh.textContent = '刷新';
+      }
+    }
+    async function boot() {
+      try {
+        const secret = location.hash.slice(1);
+        if (secret) {
+          history.replaceState(null, '', '/');
+          const response = await fetch('/api/bootstrap', {method: 'POST', headers: {'X-Gui-Bootstrap': secret}});
+          if (!response.ok) throw new Error('本地授权失败');
+          const session = await response.json();
+          csrf = session.csrf;
+          ui.senderIdentity.textContent = `发送身份: ${session.sender}`;
+        } else {
+          const response = await fetch('/api/session', {cache: 'no-store'});
+          if (!response.ok) throw new Error('本地授权已失效');
+          const session = await response.json();
+          csrf = session.csrf;
+          ui.senderIdentity.textContent = `发送身份: ${session.sender}`;
+        }
+        await refresh();
+      } catch (error) {
+        connection('界面未授权', 'bad');
+        feedback('请通过 agent-inbox gui 命令重新打开这个界面。', 'bad');
+      }
+    }
+    ui.refresh.addEventListener('click', () => refresh(true));
+    ui.search.addEventListener('input', render);
+    ui.message.addEventListener('input', () => { ui.size.textContent = `${bytes(ui.message.value)} B`; });
+    ui.form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!selected) { feedback('先选择收件人。', 'warn'); return; }
+      const message = ui.message.value;
+      if (!message.trim()) { feedback('先写下消息。', 'warn'); ui.message.focus(); return; }
+      if (bytes(message) > 65536) { feedback('消息超过 64 KiB，请缩短后发送。', 'warn'); return; }
+      ui.send.disabled = true; ui.send.textContent = '发送中...';
+      feedback(`正在发送给 ${selected}...`);
+      try {
+        const response = await fetch('/api/send', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Csrf': csrf}, body: JSON.stringify({to: selected, message})});
+        const result = await response.json();
+        if (result.state === 'accepted') { feedback(`已交给 ${selected} 的接收端。等待对方回复以确认处理结果。`, 'ok'); ui.message.value = ''; ui.size.textContent = '0 B'; }
+        else if (result.state === 'queued') { feedback(`消息已进入 ${selected} 的队列。等待对方回复以确认处理结果。`, 'ok'); ui.message.value = ''; ui.size.textContent = '0 B'; }
+        else if (result.state === 'unconfirmed') feedback(`发送未确认 (${result.code || '连接错误'})。请先检查接收端，再决定是否重发。`, 'bad');
+        else feedback(result.error || '发送失败，请检查收件人和本机 relay。', 'bad');
+      } catch (error) {
+        feedback('连接中断，发送结果未确认。请检查接收端后再决定是否重发。', 'bad');
+      } finally {
+        ui.send.disabled = false; ui.send.textContent = '发送消息';
+      }
+    });
+    boot();
+  </script>
+</body>
+</html>

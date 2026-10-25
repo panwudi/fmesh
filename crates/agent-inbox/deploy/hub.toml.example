@@ -1,0 +1,10 @@
+# Host-scoped registry. Leaf sender/inbox tokens stay on their own computer.
+directory_file = '/var/lib/agent-inbox/directory.json'
+directory_ttl_secs = 45
+# Optional; defaults beside directory_file, with a separate private lock.
+# chat_routes_file = '/var/lib/agent-inbox/chat-routes.json'
+
+[[hosts]]
+name = 'laptop1'
+relay = '127.0.0.1:8827'
+token_file = 'tokens/laptop1.host.token'
