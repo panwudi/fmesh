@@ -1,48 +1,43 @@
-//! meshtray: the flytoMesh tray icon, for machines with a desktop (macOS menu bar, Windows
+//! meshtray: the fMesh tray icon, for machines with a desktop (macOS menu bar, Windows
 //! notification area). A separate, unprivileged process: it only reads the status file meshd
 //! writes every 2 seconds, so the icon crashing or being quit never affects the network.
-//! Headless machines do not run it; `meshd status --summary` shows the same information.
+//! Headless machines do not run it; `fmesh status` and `fmesh devices` show the same.
 //!
 //! The menu stays short however big the mesh gets: this machine and its connection, how many
-//! devices are online, how many announce agent-inbox, then a few actions. The full device
-//! list (searchable) opens on demand in the browser. Every click shows its result in the menu
-//! for a few seconds.
+//! devices are online, how many announce the agent service, then a few actions. The full
+//! device and agent list is the native `fmesh-desktop` window, started on demand and gone when
+//! closed. Every click shows its result in the menu for a few seconds.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod devices;
-mod inventory;
-
+use fmesh_core::directory::Directory;
 use fmesh_core::status::{self, Status};
-use std::time::{Duration, Instant, SystemTime};
+use fmesh_core::{labels, view};
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 #[cfg(target_os = "macos")]
-const STATUS_FILE: &str = "/var/run/flytomesh.status";
-#[cfg(windows)]
-const STATUS_FILE: &str = r"C:\ProgramData\flytoMesh\status";
-#[cfg(target_os = "macos")]
 const LOG_FILE: &str = "/var/log/meshd.log";
 #[cfg(windows)]
 const LOG_FILE: &str = r"C:\ProgramData\flytoMesh\meshd.log";
 
 const REFRESH: Duration = Duration::from_secs(2);
-/// meshd writes every 2 s; older than this means it is not running.
-const STALE: Duration = Duration::from_secs(10);
 /// How long a click's confirmation stays in the menu.
 const FEEDBACK: Duration = Duration::from_secs(3);
 
 fn read_status() -> (Status, String) {
-    let fresh = std::fs::metadata(STATUS_FILE)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
-        .is_some_and(|age| age < STALE);
-    let Ok(text) = std::fs::read_to_string(STATUS_FILE) else { return (Status::default(), String::new()) };
-    (status::parse(&text, fresh), text)
+    status::read(std::path::Path::new(status::STATUS_FILE))
+}
+
+/// The native list, installed next to the tray (or the `fmesh` command).
+fn desktop_exe() -> PathBuf {
+    let name = if cfg!(windows) { "fmesh-desktop.exe" } else { "fmesh-desktop" };
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))).unwrap_or_else(|| PathBuf::from(name))
 }
 
 /// An 18x18 glyph (three linked nodes), drawn in code: no image files to ship. On macOS it
@@ -99,17 +94,11 @@ fn open_log() -> bool {
     r.is_ok()
 }
 
-/// The menu's fixed lines, as shown for a status.
+/// The menu's fixed lines, as shown for a status (the same summary as `fmesh status`; the
+/// tray never queries the agent directory itself).
 fn texts(s: &Status) -> [String; 3] {
-    if !s.running {
-        return ["flytoMesh 未运行".into(), "其他设备在线: -".into(), "agent-inbox: -".into()];
-    }
-    let relays = if s.relays_up() > 0 { format!("已连接 (中继 {}/{})", s.relays_up(), s.relays.len()) } else { "中继全部断开".into() };
-    let inbox = match s.inbox_nodes() {
-        0 => "agent-inbox: 未发现可用服务".to_string(),
-        n => format!("agent-inbox: {n} 台可用{}", if s.service(&s.me, status::INBOX).is_some() { " (含本机)" } else { "" }),
-    };
-    [format!("{} {} · {relays}", s.me, s.ip), format!("其他设备在线: {}/{} 台", s.online(), s.peers.len()), inbox]
+    let none = Directory::Unavailable { reason: String::new() };
+    view::build(s, &labels::Labels::default(), &none).summary.lines()
 }
 
 struct Ui {
@@ -125,7 +114,8 @@ struct Ui {
     shown_ok: Option<bool>,
     /// A click's confirmation: (menu item id, text to show, until).
     feedback: Option<(String, String, Instant)>,
-    devices_job: Option<std::sync::mpsc::Receiver<std::io::Result<usize>>>,
+    /// The open list window, if this tray started it.
+    window: Option<Child>,
 }
 
 impl Ui {
@@ -147,7 +137,7 @@ impl Ui {
         }
         menu.append(&PredefinedMenuItem::separator()).ok();
         menu.append(&quit).ok();
-        let builder = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("flytoMesh");
+        let builder = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("fMesh");
         // macOS draws it as a template (system colours for light / dark menu bars).
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon(s.running));
@@ -166,21 +156,13 @@ impl Ui {
             raw: String::new(),
             shown_ok: None,
             feedback: None,
-            devices_job: None,
+            window: None,
         };
         ui.refresh(s, raw);
         ui
     }
 
     fn refresh(&mut self, s: Status, raw: String) {
-        if let Some(result) = self.devices_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.devices_job = None;
-            let text = match result {
-                Ok(n) => format!("✓ 已打开设备与 Agent ({n} 台)"),
-                Err(_) => "打开失败, 请重试".into(),
-            };
-            self.feedback = Some((self.devices.id().0.clone(), text, Instant::now() + FEEDBACK));
-        }
         if self.feedback.as_ref().is_some_and(|(_, _, until)| Instant::now() >= *until) {
             self.feedback = None;
             self.shown = Status::default(); // force the texts back
@@ -191,7 +173,7 @@ impl Ui {
             self.tray.set_icon_templated(Some(icon(ok))).ok();
             #[cfg(not(target_os = "macos"))]
             self.tray.set_icon(Some(icon(ok))).ok();
-            self.tray.set_tooltip(Some(if ok { "flytoMesh 已连接" } else { "flytoMesh 未连接" })).ok();
+            self.tray.set_tooltip(Some(if ok { "fMesh 已连接" } else { "fMesh 未连接" })).ok();
             self.shown_ok = Some(ok);
         }
         self.raw = raw;
@@ -201,10 +183,10 @@ impl Ui {
         for (item, text) in self.lines.iter().zip(texts(&s)) {
             item.set_text(text);
         }
-        if let Some(owner) = inventory::owner(&s.me) {
+        if let Some(owner) = labels::load().owners.get(&s.me) {
             self.lines[0].set_text(format!("{} · {}", texts(&s)[0], owner));
         }
-        self.devices.set_text(if self.devices_job.is_some() { "正在查询 Agent 目录...".into() } else { format!("查看设备与 Agent ({} 台)...", s.peers.len() + 1) });
+        self.devices.set_text(format!("查看设备与 Agent ({} 台)...", s.peers.len() + 1));
         self.copy_ip.set_text(if s.ip.is_empty() { "复制本机地址".to_string() } else { format!("复制本机地址 {}", s.ip) });
         self.copy_status.set_text("复制诊断信息");
         self.log.set_text("查看日志");
@@ -224,13 +206,7 @@ impl Ui {
         let result = if id == self.quit.id().0 {
             return false;
         } else if id == self.devices.id().0 {
-            if self.devices_job.is_none() {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let snapshot = s.clone();
-                std::thread::spawn(move || { let _ = tx.send(devices::open(&snapshot)); });
-                self.devices_job = Some(rx);
-            }
-            "正在查询 Agent 目录...".into()
+            self.open_window()
         } else if id == self.copy_ip.id().0 {
             if s.ip.is_empty() {
                 "meshd 未运行, 没有地址".into()
@@ -259,24 +235,32 @@ impl Ui {
     }
 }
 
-fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--devices-file") {
-        let (s, _) = read_status();
-        match devices::save(&s) {
-            Ok(path) => println!("{}", path.display()),
-            Err(error) => { eprintln!("meshtray: snapshot export failed: {error}"); std::process::exit(1); }
-        }
-        return;
-    }
-    // `meshtray --devices`: just open the device list (the same page as the menu item).
-    if std::env::args().nth(1).as_deref() == Some("--devices") {
-        let (s, _) = read_status();
-        match devices::open(&s) {
-            Ok(n) => println!("opened the device list ({n} devices)"),
-            Err(e) => {
-                eprintln!("meshtray: cannot open the device list: {e}");
-                std::process::exit(1);
+impl Ui {
+    /// Starts the native list unless the one this tray started is still open.
+    fn open_window(&mut self) -> String {
+        if let Some(child) = self.window.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                return "设备列表窗口已经打开".into();
             }
+        }
+        let exe = desktop_exe();
+        match Command::new(&exe).spawn() {
+            Ok(child) => {
+                self.window = Some(child);
+                "✓ 已打开设备与 Agent 窗口".into()
+            }
+            Err(_) => format!("找不到设备列表程序 {}", exe.display()),
+        }
+    }
+}
+
+fn main() {
+    // `meshtray --devices`: just open the list window (the same as the menu item).
+    if std::env::args().nth(1).as_deref() == Some("--devices") {
+        let exe = desktop_exe();
+        if let Err(e) = Command::new(&exe).spawn() {
+            eprintln!("meshtray: cannot start {}: {e}", exe.display());
+            std::process::exit(1);
         }
         return;
     }
@@ -324,14 +308,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::texts;
-    use crate::status::parse;
+    use fmesh_core::status::parse;
 
     #[test]
     fn menu_is_a_short_summary() {
         let s = parse(
             "node laptop1 10.249.0.1 id 1 roster v14 release v8 (macos-aarch64) key K=\n\
-             relay sh 1.2.3.4:41900 up rtt 42ms sees-us -\n\
-             relay hk 1.2.3.5:41900 down rtt - sees-us -\n\
+             relay sh 203.0.113.10:41900 up rtt 42ms sees-us -\n\
+             relay hk 203.0.113.20:41900 down rtt - sees-us -\n\
              peer laptop2 10.249.0.2 direct 10.0.0.1:41820 handshake 5s tx 0 rx 0 id 2 key J=\n\
              peer desk 10.249.0.10 relay hk handshake never tx 0 rx 0 id 10 key D=\n\
              service laptop1 10.249.0.1 id 1 name agent-inbox port 8832 ident - expires 60s uid 501\n\
@@ -340,10 +324,10 @@ mod tests {
         );
         assert_eq!(
             texts(&s),
-            ["laptop1 10.249.0.1 · 已连接 (中继 1/2)".to_string(), "其他设备在线: 1/2 台".into(), "agent-inbox: 2 台可用 (含本机)".into()]
+            ["laptop1 10.249.0.1 · 已连接 (中继 1/2)".to_string(), "其他设备在线: 1/2 台".into(), "Agent: 2 台可用".into()]
         );
-        let none = parse("node a 10.249.0.3 id 3 roster v1 release v8 (x) key K=\nrelay sh 1.2.3.4:41900 up rtt 1ms sees-us -\n", true);
-        assert_eq!(texts(&none)[2], "agent-inbox: 未发现可用服务");
-        assert_eq!(texts(&parse("", false))[0], "flytoMesh 未运行");
+        let none = parse("node a 10.249.0.3 id 3 roster v1 release v8 (x) key K=\nrelay sh 203.0.113.10:41900 up rtt 1ms sees-us -\n", true);
+        assert_eq!(texts(&none)[2], "Agent: 未发现可用服务");
+        assert_eq!(texts(&parse("", false))[0], "组网未运行");
     }
 }

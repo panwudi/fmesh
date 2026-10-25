@@ -1330,7 +1330,6 @@ name = "meshtray"
 version = "0.0.1"
 dependencies = [
  "fmesh-core",
- "serde_json",
  "tao",
  "tray-icon",
 ]
