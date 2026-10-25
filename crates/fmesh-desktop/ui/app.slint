@@ -273,6 +273,7 @@ export component AppWindow inherits Window {
     in property <bool> loading;
     in property <string> hint;
     in property <string> note;
+    in property <string> search-hint;
     in-out property <string> query;
     in-out property <int> filter;
 
@@ -359,7 +360,7 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 spacing: 8px;
                 search-box := LineEdit {
-                    placeholder-text: "搜索设备, 地址, 归属, Agent 或职责  (⌘F)";
+                    placeholder-text: root.search-hint;
                     text <=> root.query;
                     horizontal-stretch: 1;
                     edited(text) => { root.search(text); }

@@ -85,7 +85,7 @@ pub const STATUS_FILE: &str = "/var/run/flytomesh.status";
 #[cfg(windows)]
 pub const STATUS_FILE: &str = r"C:\ProgramData\flytoMesh\status";
 /// World-readable copies of the verified signed roster and the admin public key, so local
-/// programs can check node ids and keys themselves (docs/design.md 7b). Nothing secret.
+/// programs can check node ids and keys themselves (docs/network.md section 5). Nothing secret.
 #[cfg(unix)]
 pub const PUBLIC_ROSTER: &str = "/var/run/flytomesh.roster";
 #[cfg(unix)]

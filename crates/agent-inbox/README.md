@@ -9,7 +9,7 @@ during its current turn, or starts a turn when the thread is idle.
 mode](docs/FLYTOMESH-TRANSPORT.md), relays use FlytoMesh to query each other
 directly and durably queue messages without a central hub. The existing `hub`
 and SSH tunnel mode remains available during migration and for older hosts;
-see the [migration steps](docs/PEER-MIGRATION.md) and [hub setup](docs/HUB-USAGE.md).
+see [dynamic peers](docs/DYNAMIC-PEERS.md) for moving off the hub and [hub setup](docs/HUB-USAGE.md).
 The [on-demand local GUI](docs/GUI.md) groups agents by computer and sends
 through the same relay identity and routes.
 Auto-join defaults distinguish same-directory pairs as `<host>.<basename>-claude`

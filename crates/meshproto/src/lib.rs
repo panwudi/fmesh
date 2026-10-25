@@ -2,7 +2,7 @@
 //!
 //! Everything a node and a relay must agree on lives here; the data plane itself is
 //! WireGuard (boringtun) and is not wrapped, except for the 4-byte relay header.
-//! Design and rationale: `docs/design.md`, section "MVP 协议".
+//! Design and rationale: `docs/network.md`, section 3.
 
 pub mod crypto;
 pub mod release;

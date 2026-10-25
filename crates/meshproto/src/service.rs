@@ -4,7 +4,7 @@
 //!
 //! An announcement is a discovery hint, not an authorization: any local user of the sender can
 //! register a service, and `ident` is whatever the service wrote. Admission is the service's
-//! own job (docs/design.md 7b).
+//! own job (docs/network.md section 5).
 //!
 //! Body after the kind byte:
 //!

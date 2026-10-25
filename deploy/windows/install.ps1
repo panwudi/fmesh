@@ -4,17 +4,22 @@
 #
 #   .\install.ps1 -Module network -Name laptop9                    # key + join request
 #   .\install.ps1 -Module network -Name laptop9 -AdminPub admin.pub -Roster roster
-#   .\install.ps1 -Module desktop
+#   .\install.ps1 -Module desktop [-Upgrade]
 #   add -DryRun to print the plan only
 #
-# Existing keys, rosters and tasks are kept. Binaries are replaced by copying to a new name and
-# renaming; a running exe can only be renamed, so the old one is moved aside first.
+# Binaries live in C:\Program Files\flytoMesh (meshd.exe with wintun.dll beside it, as the existing
+# startup task expects); node state (key, admin.pub, roster) in C:\ProgramData\flytoMesh.
+# A node that already has a roster is left alone: it updates itself through signed releases.
+# An installed desktop module is changed only with -Upgrade, which replaces its binaries.
+# Binaries are replaced by copying to a new name and renaming; a running exe can only be
+# renamed, so the old one is moved aside first.
 
 param(
     [Parameter(Mandatory = $true)][ValidateSet('network', 'desktop')][string]$Module,
     [string]$Name,
     [string]$AdminPub,
     [string]$Roster,
+    [switch]$Upgrade,
     [switch]$DryRun
 )
 
@@ -58,10 +63,14 @@ if (-not $DryRun) { Assert-Admin }
 if ($Module -eq 'network') {
     if (-not $Name) { throw '-Name is required (the node name the admin will put in the roster)' }
     if ([bool]$AdminPub -ne [bool]$Roster) { throw '-AdminPub and -Roster go together' }
-    $meshd = Join-Path $Data 'meshd.exe'
-    Install-Binary 'meshd.exe' $Data
-    Install-Binary 'wintun.dll' $Data
+    if (Test-Path (Join-Path $Data 'roster')) {
+        throw "this machine is already a mesh node ($Data\roster exists). Nodes update themselves through signed releases; replacing meshd by hand would bypass that"
+    }
+    $meshd = Join-Path $Bin 'meshd.exe'
+    Install-Binary 'meshd.exe' $Bin
+    Install-Binary 'wintun.dll' $Bin
     Install-Binary 'fmesh.exe' $Bin
+    if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $Data | Out-Null }
     $key = Join-Path $Data 'key'
     if (Test-Path $key) {
         Write-Output "kept existing node key $key"
@@ -110,6 +119,10 @@ if ($Module -eq 'network') {
 }
 
 if ($Module -eq 'desktop') {
+    $installed = Get-ScheduledTask -TaskName 'flytoMesh Tray' -ErrorAction SilentlyContinue
+    if ($installed -and -not $Upgrade) {
+        throw "the desktop module is already installed (task 'flytoMesh Tray'); use -Upgrade to replace its binaries"
+    }
     Install-Binary 'meshtray.exe' $Bin
     Install-Binary 'fmesh-desktop.exe' $Bin
     if (Get-ScheduledTask -TaskName 'flytoMesh Tray' -ErrorAction SilentlyContinue) {

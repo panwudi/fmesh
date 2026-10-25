@@ -202,7 +202,7 @@ fn desktop() -> PathBuf {
 }
 
 fn meshd() -> PathBuf {
-    let installed = if cfg!(windows) { r"C:\ProgramData\flytoMesh\meshd.exe" } else { "/opt/flytomesh/meshd" };
+    let installed = if cfg!(windows) { r"C:\Program Files\flytoMesh\meshd.exe" } else { "/opt/flytomesh/meshd" };
     first_existing(&[sibling("meshd"), PathBuf::from(installed)], "meshd")
 }
 

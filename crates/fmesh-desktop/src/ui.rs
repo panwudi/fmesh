@@ -163,6 +163,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let app = AppWindow::new()?;
     app.set_filters(ModelRc::new(VecModel::from(FILTERS.iter().map(|(t, _)| SharedString::from(*t)).collect::<Vec<_>>())));
     app.set_note(model::NOTE.into());
+    // The ⌘ glyph is missing from Windows fonts.
+    let key = if cfg!(target_os = "macos") { "⌘F" } else { "Ctrl+F" };
+    app.set_search_hint(format!("搜索设备, 地址, 归属, Agent 或职责  ({key})").into());
 
     let weak = app.as_weak();
     app.on_search(move |q| {

@@ -35,8 +35,13 @@ the tray's device list on a desktop.
 |---|---|---|---|
 | Agent Mesh | yes | yes | not yet (local control uses Unix sockets) |
 | Network Mesh | yes | yes | yes |
-| Desktop (tray, list) | yes | CLI only | yes |
-| `fmesh` CLI | yes | yes | yes |
+| Desktop (tray, list) | yes | CLI only | built, being verified on hardware |
+| `fmesh` CLI | yes | yes | built, being verified on hardware |
+
+Verified end to end so far: `fmesh install agent` (an automated test installs into an empty HOME and
+delivers a message between two sessions), the macOS list, and the network modules in production. The
+service setup of `install network` / `install desktop`, the Linux user service and `install.ps1`
+have only had dry runs; report what you find.
 
 ## Status
 

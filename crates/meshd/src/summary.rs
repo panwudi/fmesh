@@ -1,5 +1,5 @@
 //! `meshd status --summary`: the tray's view for machines without a desktop. Reads the same
-//! status file (docs/design.md 7b) and prints this node, the online count, which nodes
+//! status file (docs/network.md section 5) and prints this node, the online count, which nodes
 //! announce agent-inbox, and one line per device.
 
 use std::fmt::Write as _;

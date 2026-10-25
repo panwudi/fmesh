@@ -16,9 +16,11 @@ const MESHD_PLIST: &str = include_str!("../../../deploy/mesh/com.flyto.meshd.pli
 const MESHD_UNIT: &str = include_str!("../../../deploy/mesh/meshd.service");
 const TRAY_PLIST: &str = include_str!("../../../deploy/mesh/com.flyto.meshtray.plist");
 
-pub const USAGE: &str = "fmesh install agent [--home DIR] [--host NAME] [--port N] [--no-service] [--dry-run]
+pub const USAGE: &str = "fmesh install agent [--home DIR] [--host NAME] [--port N] [--no-service] [--upgrade] [--dry-run]
 fmesh install network --name NAME [--admin-pub FILE --roster FILE] [--dry-run]   (root)
-fmesh install desktop [--dry-run]                                                 (root, macOS)";
+fmesh install desktop [--upgrade] [--dry-run]                                     (root, macOS)
+An existing install is left alone: --upgrade only replaces binaries (agent, desktop); network
+nodes update themselves through signed releases.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -43,6 +45,9 @@ pub struct Opts {
     pub port: u16,
     pub service: bool,
     pub dry_run: bool,
+    pub upgrade: bool,
+    /// System root for /opt, /etc and /Library (tests use a scratch directory).
+    pub root: PathBuf,
     pub name: Option<String>,
     pub admin_pub: Option<PathBuf>,
     pub roster: Option<PathBuf>,
@@ -80,6 +85,8 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         port: 8831,
         service: true,
         dry_run: false,
+        upgrade: false,
+        root: PathBuf::from("/"),
         name: None,
         admin_pub: None,
         roster: None,
@@ -94,6 +101,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--port" => o.port = value()?.parse().map_err(|_| "--port must be a number".to_string())?,
             "--no-service" => o.service = false,
             "--dry-run" => o.dry_run = true,
+            "--upgrade" => o.upgrade = true,
             "--name" => o.name = Some(value()?),
             "--admin-pub" => o.admin_pub = Some(PathBuf::from(value()?)),
             "--roster" => o.roster = Some(PathBuf::from(value()?)),
@@ -140,6 +148,24 @@ pub fn agent(o: &Opts) -> Result<Vec<Step>, String> {
     let bin_dir = o.home.join(".local/bin");
     let conf = o.home.join(".config/agent-inbox");
     let agent_inbox = bin_dir.join("agent-inbox");
+    let found = existing_agent(o);
+    if o.upgrade {
+        if found.is_empty() && !agent_inbox.exists() {
+            return Err("nothing to upgrade: no Agent Mesh install found".into());
+        }
+        return Ok(vec![
+            Step::Install { from: need(&o.from, "agent-inbox")?, to: agent_inbox },
+            Step::Install { from: need(&o.from, "fmesh")?, to: bin_dir.join("fmesh") },
+            Step::Note("binaries replaced; restart the relay service, then reconnect Claude sessions (see agent-inbox docs/DESKTOP-SERVICE.md)".into()),
+        ]);
+    }
+    if !found.is_empty() {
+        return Err(format!(
+            "an Agent Mesh install is already here ({}). Running a second relay next to it is not supported; \
+             use --upgrade to replace only the binaries, or migrate by hand (agent-inbox docs/DESKTOP-SERVICE.md)",
+            found.join(", ")
+        ));
+    }
     let mut s = vec![
         Step::Mkdir { path: bin_dir.clone(), mode: 0o755 },
         Step::Mkdir { path: conf.clone(), mode: 0o700 },
@@ -210,13 +236,45 @@ pub fn agent(o: &Opts) -> Result<Vec<Step>, String> {
     Ok(s)
 }
 
+/// Signs of an Agent Mesh install for this user: service entries of either generation, the
+/// daemon config, or something already listening on the relay port.
+fn existing_agent(o: &Opts) -> Vec<String> {
+    let mut found = vec![];
+    for p in [
+        "Library/LaunchAgents/io.agent-inbox.plist",
+        "Library/LaunchAgents/io.agent-inbox.relay.plist",
+        ".config/systemd/user/agent-inbox-desktop.service",
+        ".config/systemd/user/agent-inbox-relay.user.service",
+        ".config/systemd/user/agent-inbox-relay.service",
+        ".config/agent-inbox/daemon.toml",
+        ".config/agent-inbox/relay.toml",
+    ] {
+        if o.home.join(p).exists() {
+            found.push(format!("~/{p}"));
+        }
+    }
+    if std::net::TcpListener::bind(("127.0.0.1", o.port)).is_err() {
+        found.push(format!("a process listening on 127.0.0.1:{}", o.port));
+    }
+    found
+}
+
 /// Network Mesh node: meshd as a root service, its key generated here.
 pub fn network(o: &Opts) -> Result<Vec<Step>, String> {
     if cfg!(windows) {
         return Err("on Windows use deploy/windows/install.ps1 -Module network".into());
     }
     let name = component(o.name.as_deref().ok_or("--name NAME is required (the node name the admin will put in the roster)")?);
-    let (opt, etc) = (PathBuf::from("/opt/flytomesh"), PathBuf::from("/etc/flytomesh"));
+    let (opt, etc) = (o.root.join("opt/flytomesh"), o.root.join("etc/flytomesh"));
+    // /etc/flytomesh is root-only: a directory we cannot read is treated as a node too.
+    let unreadable = etc.exists() && std::fs::read_dir(&etc).is_err();
+    if unreadable || etc.join("roster").exists() {
+        return Err(format!(
+            "this machine is already a mesh node ({} exists). Nodes update themselves through signed releases; \
+             replacing meshd by hand would bypass that",
+            etc.join("roster").display()
+        ));
+    }
     let meshd = opt.join("meshd");
     let key = etc.join("key");
     let mut s = vec![
@@ -232,11 +290,11 @@ pub fn network(o: &Opts) -> Result<Vec<Step>, String> {
             s.push(Step::Install { from: admin.clone(), to: etc.join("admin.pub") });
             s.push(Step::Install { from: roster.clone(), to: etc.join("roster") });
             if cfg!(target_os = "macos") {
-                let plist = PathBuf::from("/Library/LaunchDaemons/com.flyto.meshd.plist");
+                let plist = o.root.join("Library/LaunchDaemons/com.flyto.meshd.plist");
                 s.push(Step::Write { path: plist.clone(), content: MESHD_PLIST.into(), mode: 0o644 });
                 s.push(Step::Run { argv: vec!["launchctl".into(), "bootstrap".into(), "system".into(), plist.display().to_string()] });
             } else {
-                s.push(Step::Write { path: PathBuf::from("/etc/systemd/system/meshd.service"), content: MESHD_UNIT.into(), mode: 0o644 });
+                s.push(Step::Write { path: o.root.join("etc/systemd/system/meshd.service"), content: MESHD_UNIT.into(), mode: 0o644 });
                 s.push(Step::Run { argv: vec!["systemctl".into(), "daemon-reload".into()] });
                 s.push(Step::Run { argv: vec!["systemctl".into(), "enable".into(), "--now".into(), "meshd.service".into()] });
             }
@@ -258,8 +316,21 @@ pub fn desktop(o: &Opts) -> Result<Vec<Step>, String> {
     if !cfg!(target_os = "macos") {
         return Err("no desktop module on this platform; use `fmesh devices`".into());
     }
-    let opt = PathBuf::from("/opt/flytomesh");
-    let plist = PathBuf::from("/Library/LaunchAgents/com.flyto.meshtray.plist");
+    let opt = o.root.join("opt/flytomesh");
+    let plist = o.root.join("Library/LaunchAgents/com.flyto.meshtray.plist");
+    let binaries = vec![
+        Step::Mkdir { path: opt.clone(), mode: 0o755 },
+        Step::Install { from: need(&o.from, "meshtray")?, to: opt.join("meshtray") },
+        Step::Install { from: need(&o.from, "fmesh-desktop")?, to: opt.join("fmesh-desktop") },
+    ];
+    if plist.exists() {
+        if !o.upgrade {
+            return Err(format!("the desktop module is already installed ({}); use --upgrade to replace its binaries", plist.display()));
+        }
+        let mut s = binaries;
+        s.push(Step::Note("binaries replaced; quit the tray from its menu and log in again (or launchctl kickstart it)".into()));
+        return Ok(s);
+    }
     Ok(vec![
         Step::Mkdir { path: opt.clone(), mode: 0o755 },
         Step::Install { from: need(&o.from, "meshtray")?, to: opt.join("meshtray") },
@@ -374,9 +445,11 @@ mod tests {
         Opts {
             home: dir.join("home"),
             host: "Box.local".into(),
-            port: 18831,
+            port: std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(),
             service: false,
             dry_run: true,
+            upgrade: false,
+            root: dir.join("root"),
             name: None,
             admin_pub: None,
             roster: None,
@@ -411,8 +484,9 @@ mod tests {
         assert!(!text.iter().any(|t| t.contains("meshd") || t.contains("/opt/") || t.contains("/etc/")), "{text:?}");
         let relay = steps.iter().find_map(|s| match s { Step::Write { path, content, .. } if path.ends_with("relay.toml") => Some(content.clone()), _ => None }).unwrap();
         assert!(relay.contains("host = 'Box'") && relay.contains("local_only = true"));
-        let daemon = steps.iter().find_map(|s| match s { Step::Write { path, content, .. } if path.ends_with("daemon.toml") => Some(content.clone()), _ => None }).unwrap();
-        assert!(daemon.contains("127.0.0.1:18831") && daemon.contains("no_tunnel = true"));
+        let o = opts(&d);
+        let daemon = agent(&o).unwrap().into_iter().find_map(|s| match s { Step::Write { path, content, .. } if path.ends_with("daemon.toml") => Some(content), _ => None }).unwrap();
+        assert!(daemon.contains(&format!("127.0.0.1:{}", o.port)) && daemon.contains("no_tunnel = true"));
     }
 
     #[cfg(unix)]
@@ -433,6 +507,38 @@ mod tests {
         let check = steps.iter().position(|s| matches!(s, Step::CheckRoster { .. })).unwrap();
         let start = steps.iter().position(|s| matches!(s, Step::Run { .. })).unwrap();
         assert!(check < start, "verify before starting");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_install_is_refused_unless_upgrading_binaries() {
+        let d = package().join("existing");
+        std::fs::create_dir_all(&d).unwrap();
+        for b in ["agent-inbox", "fmesh", "meshd", "meshtray", "fmesh-desktop"] {
+            std::fs::write(d.join(b), b"bin").unwrap();
+        }
+        let mut o = opts(&d);
+        // The older relay entry counts as an install.
+        let agents = o.home.join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("io.agent-inbox.relay.plist"), "x").unwrap();
+        let err = agent(&o).unwrap_err();
+        assert!(err.contains("io.agent-inbox.relay.plist"), "{err}");
+        o.upgrade = true;
+        let steps = agent(&o).unwrap();
+        assert!(steps.iter().all(|s| matches!(s, Step::Install { .. } | Step::Note(_))), "upgrade writes no config, starts nothing");
+        // Something on the relay port counts too.
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut o = opts(&d.join("other"));
+        o.from = d.clone();
+        o.port = busy.local_addr().unwrap().port();
+        assert!(agent(&o).unwrap_err().contains("listening"));
+        // A node with a roster is left to signed releases.
+        let mut o = opts(&d);
+        o.name = Some("n".into());
+        std::fs::create_dir_all(o.root.join("etc/flytomesh")).unwrap();
+        std::fs::write(o.root.join("etc/flytomesh/roster"), "x").unwrap();
+        assert!(network(&o).unwrap_err().contains("signed releases"));
     }
 
     #[cfg(unix)]
