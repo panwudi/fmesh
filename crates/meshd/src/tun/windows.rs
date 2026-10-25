@@ -61,6 +61,11 @@ fn last_error(what: &str) -> io::Error {
     io::Error::new(io::Error::from_raw_os_error(code as i32).kind(), format!("{what}: Windows error {code}"))
 }
 
+/// Windows `ERROR_ALREADY_EXISTS`.
+const ERROR_ALREADY_EXISTS: u32 = 183;
+/// How long to wait for a previous run's adapter to go away.
+const ADAPTER_SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn open() -> io::Result<Tun> {
     unsafe {
         let lib = LoadLibraryExW(
@@ -92,14 +97,28 @@ pub fn open() -> io::Result<Tun> {
             send: sym!("WintunSendPacket"),
         };
         let name = wide(NAME);
-        // Reuse the adapter a previous run left behind, else create it.
-        let mut adapter = (f.open_adapter)(name.as_ptr());
-        if adapter.is_null() {
-            adapter = (f.create_adapter)(name.as_ptr(), name.as_ptr(), &ADAPTER_GUID);
-        }
-        if adapter.is_null() {
-            return Err(last_error("creating the Wintun adapter (needs Administrator / SYSTEM)"));
-        }
+        // Reuse the adapter a previous run left behind, else create it. Right after a restart
+        // (e.g. a self-update) the old adapter can still be going away: open finds nothing and
+        // create says it exists (183). Retry for a while instead of failing the start, which
+        // would also use up one of the new release's three health checks.
+        let deadline = std::time::Instant::now() + ADAPTER_SETTLE;
+        let adapter = loop {
+            let mut adapter = (f.open_adapter)(name.as_ptr());
+            if adapter.is_null() {
+                adapter = (f.create_adapter)(name.as_ptr(), name.as_ptr(), &ADAPTER_GUID);
+            }
+            if !adapter.is_null() {
+                break adapter;
+            }
+            let code = GetLastError();
+            if code != ERROR_ALREADY_EXISTS || std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::Error::from_raw_os_error(code as i32).kind(),
+                    format!("creating the Wintun adapter (needs Administrator / SYSTEM): Windows error {code}"),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        };
         let session = (f.start_session)(adapter, RING);
         if session.is_null() {
             let e = last_error("starting the Wintun session");
