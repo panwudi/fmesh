@@ -7,7 +7,10 @@ One product, separately installable modules:
   daemon, no mesh membership, no root, no GUI.
 - **Network Mesh** (`crates/meshproto`, `meshd`, `mesh-relay`): self-hosted WireGuard mesh with hole
   punching, relay fallback and `.mesh` names. Design: `docs/network.md`.
-- **Desktop** (`crates/meshtray`, native lists to come): optional, only on machines with a desktop.
+- **Desktop** (`crates/meshtray`, `crates/fmesh-desktop`): optional, only on machines with a desktop.
+  The list is a Slint window (owner's choice) fed by `crates/fmesh-core`, the same model as the CLI.
+- **CLI** (`crates/fmesh`): `status`, `devices`, `agents`, `install`; hands `agent` / `net` to the
+  module binaries.
 - Shared services (shared agents on team servers): design only, see "Security wording".
 
 Where things came from and what changed on import: `IMPORT.md`. Public repository:
@@ -20,8 +23,11 @@ cargo test --locked --workspace --features agent-inbox/dynamic-peers
 cargo clippy --locked --workspace --all-targets --features agent-inbox/dynamic-peers -- -D warnings
 cargo build --locked --release -p agent-inbox --features dynamic-peers   # Agent Mesh
 cargo build --locked --profile mesh -p meshd -p mesh-relay              # Network Mesh
-cargo zigbuild --locked --profile mesh -p meshd --target x86_64-pc-windows-gnu
+deploy/package.sh [platform]                                            # release packages
 ```
+
+The agent-only acceptance test (`crates/fmesh/tests/agent_only.rs`) installs into an empty HOME and
+delivers a message between two sessions; it needs the workspace build of agent-inbox.
 
 `release` keeps unwinding (agent-inbox threads); `mesh` aborts on panic for size. Keep it that way
 unless agent-inbox stops relying on per-thread panic isolation.
@@ -33,7 +39,8 @@ unless agent-inbox stops relying on per-thread panic isolation.
 - Agent-only must keep building without network, tray or WireGuard crates
   (`cargo tree -p agent-inbox` is the check).
 - Headless machines get a complete CLI and machine-readable output for everything the GUI shows.
-- The device and agent list is a **native** UI. No HTML snapshot, no WebView wrapper as the final form.
+- The device and agent list is the Slint window. No HTML snapshot, no WebView. Check UI changes
+  with a real screenshot of the window, not only a build.
   Every click gives visible feedback (selected, in progress, done, failed with a reason).
 - Truthful states: HTTP 202 means queued, not acted on. A failed query is "unavailable", not zero. A
   missing announcement is "not discovered", not "not installed". Online is not "a person is present".
