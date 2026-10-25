@@ -11,3 +11,4 @@ tao = "0.37.1"
 tray-icon = "0.26.1"
 # On-demand agent directory and explicit local device labels, not network protocol state.
 serde_json = "1.0"
+fmesh-core = { path = "../fmesh-core" }

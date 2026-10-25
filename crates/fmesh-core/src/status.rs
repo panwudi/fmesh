@@ -1,16 +1,28 @@
-//! Parses meshd's status file (contract: docs/design.md 7b). Lines are keyword based; unknown
-//! lines and extra fields are ignored, so older and newer meshd versions both work.
+//! Parses meshd's status file (contract: docs/network.md section 5). Lines are keyword based;
+//! unknown lines and extra fields are ignored, so older and newer meshd versions both work.
+
+use serde::Serialize;
+use std::time::{Duration, SystemTime};
 
 /// WireGuard drops a session 180 s after its handshake, and keepalives (every 25 s) renew it
 /// while the peer is up: an older or missing handshake means the peer is offline, even when
 /// a path to it (e.g. a relay) is known.
 const ONLINE_HANDSHAKE_SECS: u64 = 180;
 
-/// The service the tray counts (agent-inbox announces itself through meshd).
+/// meshd rewrites the file every 2 s; older than this means it is not running.
+pub const STALE: Duration = Duration::from_secs(10);
+
+/// The service agent-inbox announces through meshd.
 pub const INBOX: &str = "agent-inbox";
 
-#[derive(Default, PartialEq, Clone, Debug)]
+#[cfg(windows)]
+pub const STATUS_FILE: &str = r"C:\ProgramData\flytoMesh\status";
+#[cfg(not(windows))]
+pub const STATUS_FILE: &str = "/var/run/flytomesh.status";
+
+#[derive(Default, PartialEq, Clone, Debug, Serialize)]
 pub struct Status {
+    /// meshd wrote the file within `STALE`. False also when there is no file at all.
     pub running: bool,
     pub me: String,
     pub ip: String,
@@ -21,26 +33,49 @@ pub struct Status {
     pub services: Vec<Service>,
 }
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug, Serialize)]
 pub struct Relay {
     pub name: String,
     pub up: bool,
     pub rtt: String,
 }
 
-#[derive(PartialEq, Clone, Debug)]
+/// How packets reach a peer, as meshd reports it.
+#[derive(PartialEq, Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Path {
+    Direct { lan: bool },
+    Relay { relay: String },
+    None,
+}
+
+#[derive(PartialEq, Clone, Debug, Serialize)]
 pub struct Peer {
     pub name: String,
     pub ip: String,
-    /// Human-readable path ("直连", "经中继 sh", "离线").
-    pub path: String,
+    pub path: Path,
     pub online: bool,
     /// Seconds since the last handshake.
     pub handshake: Option<u64>,
 }
 
+impl Peer {
+    /// "直连", "直连 (局域网)", "经中继 sh", "无路径", or "离线" when it is not online.
+    pub fn path_text(&self) -> String {
+        if !self.online {
+            return "离线".into();
+        }
+        match &self.path {
+            Path::Direct { lan: true } => "直连 (局域网)".into(),
+            Path::Direct { lan: false } => "直连".into(),
+            Path::Relay { relay } => format!("经中继 {relay}"),
+            Path::None => "无路径".into(),
+        }
+    }
+}
+
 /// A fresh service announcement: from this node (`local`) or an online peer.
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug, Serialize)]
 pub struct Service {
     pub node: String,
     pub name: String,
@@ -50,6 +85,17 @@ pub struct Service {
 
 fn after<'a>(t: &[&'a str], key: &str) -> Option<&'a str> {
     t.iter().position(|x| *x == key).and_then(|i| t.get(i + 1)).copied()
+}
+
+/// Reads and parses `path`; a missing or stale file gives a status that claims nothing.
+pub fn read(path: &std::path::Path) -> (Status, String) {
+    let fresh = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age < STALE);
+    let Ok(text) = std::fs::read_to_string(path) else { return (Status::default(), String::new()) };
+    (parse(&text, fresh), text)
 }
 
 pub fn parse(text: &str, fresh: bool) -> Status {
@@ -66,17 +112,17 @@ pub fn parse(text: &str, fresh: bool) -> Status {
             ["relay", name, _, state, "rtt", rtt, ..] => s.relays.push(Relay { name: name.to_string(), up: *state == "up", rtt: rtt.to_string() }),
             ["peer", name, ip, kind, rest @ ..] => {
                 let path = match *kind {
-                    "direct" if rest.get(1) == Some(&"(unconnected)") => "直连".to_string(),
                     "direct" => {
-                        let lan = rest.first().is_some_and(|a| a.starts_with("10.") || a.starts_with("192.168.") || a.starts_with("172."));
-                        if lan { "直连 (局域网)".into() } else { "直连".into() }
+                        let connected = rest.get(1) != Some(&"(unconnected)");
+                        let lan = connected
+                            && rest.first().is_some_and(|a| a.starts_with("10.") || a.starts_with("192.168.") || a.starts_with("172."));
+                        Path::Direct { lan }
                     }
-                    "relay" => format!("经中继 {}", rest.first().unwrap_or(&"?")),
-                    _ => "无路径".into(),
+                    "relay" => Path::Relay { relay: rest.first().unwrap_or(&"?").to_string() },
+                    _ => Path::None,
                 };
                 let handshake = after(rest, "handshake").and_then(|h| h.strip_suffix('s')).and_then(|h| h.parse::<u64>().ok());
                 let online = handshake.is_some_and(|age| age < ONLINE_HANDSHAKE_SECS);
-                let path = if online { path } else { "离线".into() };
                 s.peers.push(Peer { name: name.to_string(), ip: ip.to_string(), path, online, handshake });
             }
             ["service", node, _ip, rest @ ..] => {
@@ -91,10 +137,7 @@ pub fn parse(text: &str, fresh: bool) -> Status {
     }
     // A stale file is what meshd last saw before it stopped: nothing in it holds any more.
     if !fresh {
-        for p in &mut s.peers {
-            p.online = false;
-            p.path = "离线".into();
-        }
+        s.peers.iter_mut().for_each(|p| p.online = false);
         s.relays.iter_mut().for_each(|r| r.up = false);
         s.services.clear();
     }
@@ -144,10 +187,10 @@ mod tests {
     #[test]
     fn offline_peers_are_not_counted_as_reachable() {
         let s = parse(SAMPLE, true);
-        let got: Vec<(&str, bool, &str)> = s.peers.iter().map(|p| (p.name.as_str(), p.online, p.path.as_str())).collect();
+        let got: Vec<(&str, bool, String)> = s.peers.iter().map(|p| (p.name.as_str(), p.online, p.path_text())).collect();
         assert_eq!(
             got,
-            [("laptop2", true, "直连 (局域网)"), ("nas", true, "经中继 sh"), ("desk", false, "离线"), ("old", false, "离线")]
+            [("laptop2", true, "直连 (局域网)".into()), ("nas", true, "经中继 sh".into()), ("desk", false, "离线".into()), ("old", false, "离线".into())]
         );
         assert_eq!((s.online(), s.relays_up(), s.relays.len()), (2, 1, 2));
         assert_eq!((s.roster.as_str(), s.release.as_str()), ("v14", "v8"));
@@ -169,7 +212,7 @@ mod tests {
         let s = parse(SAMPLE, false);
         assert!(!s.running);
         assert_eq!((s.online(), s.relays_up(), s.inbox_nodes()), (0, 0, 0));
-        assert!(s.peers.iter().all(|p| p.path == "离线"));
+        assert!(s.peers.iter().all(|p| p.path_text() == "离线"));
     }
 
     #[test]

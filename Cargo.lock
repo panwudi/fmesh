@@ -529,6 +529,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmesh-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1300,6 +1308,7 @@ dependencies = [
 name = "meshtray"
 version = "0.0.1"
 dependencies = [
+ "fmesh-core",
  "serde_json",
  "tao",
  "tray-icon",

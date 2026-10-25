@@ -5,6 +5,7 @@ members = [
     "crates/meshd",
     "crates/mesh-relay",
     "crates/meshtray",
+    "crates/fmesh-core",
     "crates/agent-inbox",
 ]
 

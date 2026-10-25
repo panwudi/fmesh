@@ -12,9 +12,8 @@
 
 mod devices;
 mod inventory;
-mod status;
 
-use status::Status;
+use fmesh_core::status::{self, Status};
 use std::time::{Duration, Instant, SystemTime};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};

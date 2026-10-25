@@ -2,7 +2,7 @@
 //! in the default browser. Searching and filtering happen in the page; closing it touches
 //! nothing, and the tray (and meshd) never wait on it. No webview, no extra dependency.
 
-use crate::status::{Status, INBOX};
+use fmesh_core::status::{Status, INBOX};
 use crate::inventory::Inventory;
 use std::fmt::Write as _;
 
@@ -107,7 +107,8 @@ pub fn html_with_inventory(s: &Status, generated_ms: u64, inv: &Inventory) -> St
     peers.sort_by(|a, b| b.online.cmp(&a.online).then(a.name.cmp(&b.name)));
     for p in peers {
         let hs = handshake(p.handshake);
-        row(&mut rows, Row { name: &p.name, ip: &p.ip, online: p.online, path: &p.path, handshake: hs, inbox: inbox_port(&p.name), me: false }, inv);
+        let path = p.path_text();
+        row(&mut rows, Row { name: &p.name, ip: &p.ip, online: p.online, path: &path, handshake: hs, inbox: inbox_port(&p.name), me: false }, inv);
     }
     let relays: Vec<String> =
         s.relays.iter().map(|r| if r.up { format!("{} {}", esc(&r.name), esc(&r.rtt)) } else { format!("{} 断开", esc(&r.name)) }).collect();
