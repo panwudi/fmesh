@@ -44,6 +44,8 @@ const TICK: Duration = Duration::from_millis(250);
 const KEEPALIVE: u16 = 25;
 /// HELLO interval while a relay answers, and the retry interval while it does not.
 const HELLO_EVERY: Duration = Duration::from_secs(25);
+/// Local "check for updates" requests ask the relays at most this often.
+const CHECK_MIN_GAP: Duration = Duration::from_secs(5);
 const HELLO_RETRY: Duration = Duration::from_secs(3);
 /// A relay that has not answered a HELLO for this long is considered down.
 const RELAY_DEAD: Duration = Duration::from_secs(60);
@@ -293,6 +295,8 @@ struct Rx<'a> {
     services_dir: Option<PathBuf>,
     local_services: Vec<crate::services::Local>,
     services_ts: u64,
+    /// When a local "check for updates" request last made us ask the relays.
+    last_check: Option<Instant>,
     out: Vec<u8>,
 }
 
@@ -449,6 +453,7 @@ pub fn run(cfg: Config) -> io::Result<()> {
         fetch: None,
         updater,
         services_dir,
+        last_check: None,
         local_services: vec![],
         services_ts: 0,
         out: vec![0u8; BUF],
@@ -1173,10 +1178,10 @@ impl<'a> Rx<'a> {
         r.version = version;
         r.next_hello = now + HELLO_EVERY;
         // Reaching a relay is the health check for a freshly installed release.
-        let relay_addr = r.addr;
+        let (relay_addr, relay_name) = (r.addr, r.name.clone());
         self.updater.healthy();
         if let Some((rv, hash)) = release {
-            self.updater.announced(&self.sh.wan, relay_addr, rv, hash);
+            self.updater.announced(&self.sh.wan, relay_addr, &relay_name, rv, hash);
         }
         let r = &mut self.relays[ri];
         if !was_alive {
@@ -1466,6 +1471,15 @@ impl<'a> Rx<'a> {
             Some(d) => crate::services::scan(d, SystemTime::now()),
             None => vec![],
         };
+        let requests = self.services_dir.as_deref().map(crate::services::take_requests).unwrap_or_default();
+        // "Check for updates": ask every relay now instead of at the next HELLO. Rate limited,
+        // since any local user can ask.
+        if requests.iter().any(|r| r == "check") && self.last_check.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_GAP) {
+            self.last_check = Some(now);
+            for r in &mut self.relays {
+                r.next_hello = now;
+            }
+        }
         let changed = scanned.iter().map(|l| &l.svc).ne(self.local_services.iter().map(|l| &l.svc));
         self.local_services = scanned;
         let list: Vec<Service> = self.local_services.iter().map(|l| l.svc.clone()).collect();
@@ -1512,6 +1526,7 @@ impl<'a> Rx<'a> {
             self.updater.status(),
             meshproto::b64(&self.me.key)
         );
+        let _ = writeln!(s, "{}", self.updater.status_line());
         for r in &self.relays {
             let state = if r.alive(now) { "up" } else { "down" };
             let rtt = r.rtt.map(|d| format!("{}ms", d.as_millis())).unwrap_or("-".into());

@@ -11,5 +11,18 @@
 
 pub mod directory;
 pub mod labels;
+pub mod modules;
 pub mod status;
 pub mod view;
+
+/// The fMesh product version, shared by every binary in the workspace.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Found in a binary's bytes by `modules::find_mark`, so the version of a GUI program can be
+/// read without running it. Every binary that links fmesh-core calls `keep_version_mark`.
+pub const VERSION_MARK: &str = concat!("fmesh-version ", env!("CARGO_PKG_VERSION"), ";");
+
+/// Keeps `VERSION_MARK` in the binary (the linker would drop an unused constant).
+pub fn keep_version_mark() {
+    std::hint::black_box(VERSION_MARK);
+}

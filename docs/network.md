@@ -191,12 +191,18 @@ writes, world readable), `C:\ProgramData\flytoMesh\status` (Windows). Rewritten 
 
 ```text
 node <name> <mesh IP> id <N> roster v<N> release v<N> (<platform>) [downloading <a>/<b>] key <pubkey>
+update version <x.y.z> release <N> [latest <N> via <relay> age <N>] state <state> [progress <a>/<b>] [bad <N>] [error <text>]
 relay <name> <ip:port> up|down rtt <N>ms|- sees-us <ip:port>|-
 peer <name> <mesh IP> <path> handshake <N>s|never tx <N> rx <N> id <N> key <pubkey>
 service <node> <mesh IP> id <N> name <service> port <N> ident <x>|- expires <N>s [uid <N>|-]
 ```
 
 - `<path>` is `direct <ip:port>`, `direct <ip:port> (unconnected)`, `relay <name>` or `none`.
+- `update` (since v11): meshd's product version, the release it runs, the newest release a relay
+  announced (`age` seconds before the file was written), and `state`: `idle`, `checking` (fetching a
+  manifest), `downloading`, `paused`, `trial` (a new release proving it reaches a relay). `bad` is a
+  rolled back release; `error` (free text, always last) is the last failure. Product version `0.N.0`
+  and release `N` are the same build.
 - Parse fields by keyword (`key`, `id`), not position.
 - A peer is online when `handshake` < 180 s. The path alone does not mean online.
 - Compatibility: only new line types and fields appended at the end. Readers ignore unknown lines
@@ -225,6 +231,10 @@ status file. **An announcement is a discovery candidate, never authorization.**
 - Unix directory mode 1733: anyone can create, nobody can list or replace another user's file. The
   owner uid is shown locally, never sent to peers. On Windows the directory is currently listable and
   no uid is reported (open item).
+- Requests (since v11): a file `.request-<anything>` in the same directory, one word per line, asks
+  `meshd` to do something it does anyway, sooner. `check` sends HELLO to every relay now (at most every
+  5 s), so "check for updates" gets a fresh announcement within a second or two. `meshd` reads and
+  deletes request files every 2 s; they are never services and never sent to peers.
 - Propagation: DISCO kind 4 over the existing node to node control encryption, sender identified by the
   authenticated header. Own services only; resent every 30 s and within 2 s of a peer coming online.
 - Receiver: timestamp must be newer than the last one from that peer and within 120 s of local time;

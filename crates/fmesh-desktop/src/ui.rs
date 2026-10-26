@@ -2,6 +2,7 @@
 //! search, filter and expansion, copies to the clipboard and reports every result.
 
 use crate::model::{self, Row, FILTERS};
+use fmesh_core::modules::{self, Module};
 use fmesh_core::view::{Agents, Device, Link, View};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
@@ -13,6 +14,9 @@ slint::include_modules!();
 #[derive(Default)]
 struct State {
     view: Option<View>,
+    modules: Vec<Module>,
+    /// Check for updates once the first load is done (opened by the tray's "检查更新").
+    check_after_load: bool,
     query: String,
     filter: usize,
     /// Devices the user opened, by name, kept across searches and refreshes.
@@ -66,9 +70,26 @@ fn item(i: usize, d: &Device, expanded: bool) -> DeviceItem {
     }
 }
 
+fn module_item(i: usize, m: &Module) -> ModuleItem {
+    ModuleItem {
+        index: i as i32,
+        name: m.name.into(),
+        version: m.version_text.as_str().into(),
+        state: m.state.as_str().into(),
+        ok: m.ok,
+        installed: m.installed,
+        policy: m.policy.into(),
+        update: m.update.as_str().into(),
+        hint: m.install_hint.clone().unwrap_or_default().into(),
+        path: m.path.clone().unwrap_or_default().into(),
+    }
+}
+
 fn render(app: &AppWindow) {
     STATE.with(|s| {
         let s = s.borrow();
+        let modules: Vec<ModuleItem> = s.modules.iter().enumerate().map(|(i, m)| module_item(i, m)).collect();
+        app.set_modules(ModelRc::new(VecModel::from(modules)));
         let Some(v) = s.view.as_ref() else { return };
         let shown = model::visible(v, &s.query, FILTERS[s.filter].1);
         let hits: BTreeSet<usize> = model::expand(v, &s.query).into_iter().collect();
@@ -103,6 +124,10 @@ fn stats(v: &View) -> Vec<Stat> {
 
 /// Shows `text` in the status line; it falls back to the count after a while.
 fn say(app: &AppWindow, text: impl Into<SharedString>) {
+    say_for(app, text, Duration::from_secs(5));
+}
+
+fn say_for(app: &AppWindow, text: impl Into<SharedString>, how_long: Duration) {
     app.set_hint(text.into());
     let seq = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -110,7 +135,7 @@ fn say(app: &AppWindow, text: impl Into<SharedString>) {
         s.hint_seq
     });
     let weak = app.as_weak();
-    slint::Timer::single_shot(Duration::from_secs(5), move || {
+    slint::Timer::single_shot(how_long, move || {
         if STATE.with(|s| s.borrow().hint_seq) == seq {
             if let Some(app) = weak.upgrade() {
                 app.set_hint("".into());
@@ -144,23 +169,55 @@ fn reload(app: &AppWindow) {
         return;
     }
     app.set_loading(true);
-    say(app, "正在查询设备与 Agent 目录...");
+    say(app, "正在查询设备, Agent 目录和本机模块...");
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let view = crate::load();
+        let (view, mods) = crate::load();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = weak.upgrade() else { return };
             let total = view.devices.len();
-            STATE.with(|s| s.borrow_mut().view = Some(view));
+            STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                s.view = Some(view);
+                s.modules = mods;
+            });
             app.set_loading(false);
             render(&app);
             say(&app, format!("已更新 · {total} 台设备"));
+            if STATE.with(|s| std::mem::take(&mut s.borrow_mut().check_after_load)) {
+                check(&app);
+            }
         });
     });
 }
 
-pub fn run() -> Result<(), slint::PlatformError> {
+/// "检查更新": meshd asks the relays now; the result stays in the status line and the
+/// network card is refreshed with what came back.
+fn check(app: &AppWindow) {
+    if app.get_checking() {
+        return;
+    }
+    app.set_checking(true);
+    say_for(app, "正在检查: 请组网服务立即问中继 (最多 10 秒)...", Duration::from_secs(15));
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let result = modules::check_now(Duration::from_secs(10));
+        let (_, mods) = crate::load();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = weak.upgrade() else { return };
+            STATE.with(|s| s.borrow_mut().modules = mods);
+            app.set_checking(false);
+            render(&app);
+            say_for(&app, result.text(), Duration::from_secs(20));
+        });
+    });
+}
+
+pub fn run(start: crate::Start) -> Result<(), slint::PlatformError> {
     let app = AppWindow::new()?;
+    if start.modules {
+        app.set_page(1);
+    }
     app.set_filters(ModelRc::new(VecModel::from(FILTERS.iter().map(|(t, _)| SharedString::from(*t)).collect::<Vec<_>>())));
     app.set_note(model::NOTE.into());
     // The ⌘ glyph is missing from Windows fonts.
@@ -216,6 +273,30 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let weak = app.as_weak();
+    app.on_set_page(move |i| {
+        if let Some(app) = weak.upgrade() {
+            say(&app, if i == 1 { "本机模块: 版本, 运行状态和更新方式" } else { "设备与 Agent" });
+        }
+    });
+    let weak = app.as_weak();
+    app.on_check_update(move || {
+        if let Some(app) = weak.upgrade() {
+            check(&app);
+        }
+    });
+    let weak = app.as_weak();
+    app.on_copy_hint(move |i| {
+        let Some(app) = weak.upgrade() else { return };
+        let hint = STATE.with(|s| s.borrow().modules.get(i as usize).and_then(|m| m.install_hint.clone()));
+        match hint {
+            Some(h) if copy(&h) => say(&app, format!("已复制安装命令: {h}")),
+            Some(_) => say(&app, "复制失败, 请重试"),
+            None => {}
+        }
+    });
+
+    STATE.with(|s| s.borrow_mut().check_after_load = start.check);
     reload(&app);
     app.run()
 }

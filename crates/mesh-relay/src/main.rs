@@ -33,6 +33,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let res = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
+        Some("version" | "--version") => {
+            println!("mesh-relay {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         _ => {
             eprintln!(
                 "usage:\n  mesh-relay run [--dir D] [--listen PORT] [--event-url URL] [--event-cmd CMD]\n\n\

@@ -31,6 +31,50 @@ pub struct Status {
     pub relays: Vec<Relay>,
     pub peers: Vec<Peer>,
     pub services: Vec<Service>,
+    /// meshd's update state; `None` from meshd before release v11, which does not report it.
+    pub update: Option<Update>,
+    /// Seconds since meshd wrote the file (`None`: no file).
+    pub file_age: Option<u64>,
+}
+
+/// The `update` line: what this meshd runs and what the relays last announced.
+#[derive(Default, PartialEq, Clone, Debug, Serialize)]
+pub struct Update {
+    /// meshd's product version, e.g. `0.11.0`.
+    pub version: String,
+    /// The release this node runs (0: unknown, e.g. installed by hand).
+    pub release: u64,
+    /// The newest release a relay announced, which relay, and how many seconds before the
+    /// file was written.
+    pub latest: Option<u64>,
+    pub via: String,
+    pub age: Option<u64>,
+    /// `idle`, `checking`, `downloading`, `paused` or `trial` (a new release is proving it
+    /// can reach a relay).
+    pub state: String,
+    pub progress: Option<(u64, u64)>,
+    /// A release that failed its health check and was rolled back.
+    pub bad: Option<u64>,
+    pub error: Option<String>,
+}
+
+fn parse_update(rest: &[&str]) -> Update {
+    let num = |k: &str| after(rest, k).and_then(|v| v.parse::<u64>().ok());
+    let progress = after(rest, "progress").and_then(|p| {
+        let (a, b) = p.split_once('/')?;
+        Some((a.parse().ok()?, b.parse().ok()?))
+    });
+    Update {
+        version: after(rest, "version").unwrap_or("").to_string(),
+        release: num("release").unwrap_or(0),
+        latest: num("latest"),
+        via: after(rest, "via").unwrap_or("").to_string(),
+        age: num("age"),
+        state: after(rest, "state").unwrap_or("").to_string(),
+        progress,
+        bad: num("bad"),
+        error: rest.iter().position(|w| *w == "error").map(|i| rest[i + 1..].join(" ")).filter(|e| !e.is_empty()),
+    }
 }
 
 #[derive(PartialEq, Clone, Debug, Serialize)]
@@ -89,13 +133,12 @@ fn after<'a>(t: &[&'a str], key: &str) -> Option<&'a str> {
 
 /// Reads and parses `path`; a missing or stale file gives a status that claims nothing.
 pub fn read(path: &std::path::Path) -> (Status, String) {
-    let fresh = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
-        .is_some_and(|age| age < STALE);
+    let age = std::fs::metadata(path).and_then(|m| m.modified()).ok().map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
+    let fresh = age.is_some_and(|age| age < STALE);
     let Ok(text) = std::fs::read_to_string(path) else { return (Status::default(), String::new()) };
-    (parse(&text, fresh), text)
+    let mut s = parse(&text, fresh);
+    s.file_age = age.map(|a| a.as_secs());
+    (s, text)
 }
 
 pub fn parse(text: &str, fresh: bool) -> Status {
@@ -109,6 +152,7 @@ pub fn parse(text: &str, fresh: bool) -> Status {
                 s.roster = after(rest, "roster").unwrap_or("").to_string();
                 s.release = after(rest, "release").unwrap_or("").to_string();
             }
+            ["update", rest @ ..] => s.update = Some(parse_update(rest)),
             ["relay", name, _, state, "rtt", rtt, ..] => s.relays.push(Relay { name: name.to_string(), up: *state == "up", rtt: rtt.to_string() }),
             ["peer", name, ip, kind, rest @ ..] => {
                 let path = match *kind {
@@ -213,6 +257,18 @@ mod tests {
         assert!(!s.running);
         assert_eq!((s.online(), s.relays_up(), s.inbox_nodes()), (0, 0, 0));
         assert!(s.peers.iter().all(|p| p.path_text() == "离线"));
+    }
+
+    #[test]
+    fn update_line() {
+        let text = format!("{SAMPLE}update version 0.11.0 release 11 latest 12 via sh age 3 state downloading progress 40/800 bad 10 error manifest rejected: bad line\n");
+        let u = parse(&text, true).update.unwrap();
+        assert_eq!((u.version.as_str(), u.release, u.latest, u.via.as_str(), u.age), ("0.11.0", 11, Some(12), "sh", Some(3)));
+        assert_eq!((u.state.as_str(), u.progress, u.bad), ("downloading", Some((40, 800)), Some(10)));
+        assert_eq!(u.error.as_deref(), Some("manifest rejected: bad line"));
+        let quiet = parse("update version 0.11.0 release 11 state idle\n", true).update.unwrap();
+        assert_eq!((quiet.latest, quiet.error), (None, None));
+        assert!(parse(SAMPLE, true).update.is_none(), "older meshd");
     }
 
     #[test]

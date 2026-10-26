@@ -12,7 +12,7 @@
 
 use fmesh_core::directory::Directory;
 use fmesh_core::status::{self, Status};
-use fmesh_core::{labels, view};
+use fmesh_core::{labels, modules, view};
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -104,7 +104,9 @@ fn texts(s: &Status) -> [String; 3] {
 struct Ui {
     tray: TrayIcon,
     lines: [MenuItem; 3],
+    version: MenuItem,
     devices: MenuItem,
+    check: MenuItem,
     copy_ip: MenuItem,
     copy_status: MenuItem,
     log: MenuItem,
@@ -123,7 +125,9 @@ impl Ui {
         let (s, raw) = read_status();
         let menu = Menu::new();
         let lines = [MenuItem::new("", false, None), MenuItem::new("", false, None), MenuItem::new("", false, None)];
+        let version = MenuItem::new("", false, None);
         let devices = MenuItem::new("", true, None);
+        let check = MenuItem::new("", true, None);
         let copy_ip = MenuItem::new("", true, None);
         let copy_status = MenuItem::new("", true, None);
         let log = MenuItem::new("", true, None);
@@ -131,8 +135,9 @@ impl Ui {
         for l in &lines {
             menu.append(l).ok();
         }
+        menu.append(&version).ok();
         menu.append(&PredefinedMenuItem::separator()).ok();
-        for item in [&devices, &copy_ip, &copy_status, &log] {
+        for item in [&devices, &check, &copy_ip, &copy_status, &log] {
             menu.append(item).ok();
         }
         menu.append(&PredefinedMenuItem::separator()).ok();
@@ -147,7 +152,9 @@ impl Ui {
         let mut ui = Ui {
             tray,
             lines,
+            version,
             devices,
+            check,
             copy_ip,
             copy_status,
             log,
@@ -186,12 +193,14 @@ impl Ui {
         if let Some(owner) = labels::load().owners.get(&s.me) {
             self.lines[0].set_text(format!("{} · {}", texts(&s)[0], owner));
         }
+        self.version.set_text(modules::update_short(&s));
         self.devices.set_text(format!("查看设备与 Agent ({} 台)...", s.peers.len() + 1));
+        self.check.set_text("本机模块与检查更新...");
         self.copy_ip.set_text(if s.ip.is_empty() { "复制本机地址".to_string() } else { format!("复制本机地址 {}", s.ip) });
         self.copy_status.set_text("复制诊断信息");
         self.log.set_text("查看日志");
         if let Some((id, text, _)) = &self.feedback {
-            for item in [&self.devices, &self.copy_ip, &self.copy_status, &self.log] {
+            for item in [&self.devices, &self.check, &self.copy_ip, &self.copy_status, &self.log] {
                 if item.id().0 == *id {
                     item.set_text(text);
                 }
@@ -206,7 +215,9 @@ impl Ui {
         let result = if id == self.quit.id().0 {
             return false;
         } else if id == self.devices.id().0 {
-            self.open_window()
+            self.open_window(&[])
+        } else if id == self.check.id().0 {
+            self.open_window(&["--check"])
         } else if id == self.copy_ip.id().0 {
             if s.ip.is_empty() {
                 "meshd 未运行, 没有地址".into()
@@ -236,25 +247,53 @@ impl Ui {
 }
 
 impl Ui {
-    /// Starts the native list unless the one this tray started is still open.
-    fn open_window(&mut self) -> String {
+    /// Starts the native list unless the one this tray started is still open. `--check`
+    /// opens it on the modules page and checks for updates there.
+    fn open_window(&mut self, args: &[&str]) -> String {
         if let Some(child) = self.window.as_mut() {
             if matches!(child.try_wait(), Ok(None)) {
-                return "设备列表窗口已经打开".into();
+                return "窗口已经打开, 请在窗口里操作".into();
             }
         }
         let exe = desktop_exe();
-        match Command::new(&exe).spawn() {
+        match Command::new(&exe).args(args).spawn() {
             Ok(child) => {
                 self.window = Some(child);
-                "✓ 已打开设备与 Agent 窗口".into()
+                if args.is_empty() { "✓ 已打开设备与 Agent 窗口".into() } else { "✓ 已打开本机模块, 正在检查更新".into() }
             }
             Err(_) => format!("找不到设备列表程序 {}", exe.display()),
         }
     }
 }
 
+/// Size and modification time of the running executable, to notice an upgrade.
+fn exe_stamp() -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// The executable was replaced (an upgrade): start the new one. Under launchd a non-zero exit
+/// makes it start the job again (KeepAlive on unsuccessful exit); elsewhere the new process is
+/// started directly and outlives this one.
+fn restart_into_new_binary() -> ! {
+    eprintln!("meshtray: executable replaced, restarting into the new version");
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("XPC_SERVICE_NAME").is_some_and(|n| n == "com.flyto.meshtray") {
+        std::process::exit(75);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        Command::new(exe).spawn().ok();
+    }
+    std::process::exit(0);
+}
+
 fn main() {
+    fmesh_core::keep_version_mark();
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("meshtray {}", fmesh_core::VERSION);
+        return;
+    }
+    let started_as = exe_stamp();
     // `meshtray --devices`: just open the list window (the same as the menu item).
     if std::env::args().nth(1).as_deref() == Some("--devices") {
         let exe = desktop_exe();
@@ -298,6 +337,9 @@ fn main() {
             let due = LAST.with(|l| l.get().is_none_or(|t| t.elapsed() >= REFRESH));
             if due || u.feedback.is_some() {
                 LAST.with(|l| l.set(Some(Instant::now())));
+                if started_as.is_some() && exe_stamp().is_some_and(|now| Some(now) != started_as) {
+                    restart_into_new_binary();
+                }
                 let (s, raw) = read_status();
                 u.refresh(s, raw);
             }

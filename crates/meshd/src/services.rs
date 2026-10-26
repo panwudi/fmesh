@@ -113,6 +113,39 @@ pub fn scan(dir: &Path, now: SystemTime) -> Vec<Local> {
     out
 }
 
+/// Request files: `.request-<anything>` in the same directory, one word per line (`check`:
+/// ask the relays for the current release now). Any local user can write one; meshd reads and
+/// deletes them on its status timer. A request only makes meshd do sooner what it does anyway,
+/// so it needs no authorization. Read like registrations: plain small files, no links.
+pub const REQUEST_PREFIX: &str = ".request-";
+const MAX_REQUESTS: usize = 16;
+
+pub fn take_requests(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut out = vec![];
+    for e in entries.flatten().filter(|e| e.file_name().to_string_lossy().starts_with(REQUEST_PREFIX)).take(MAX_REQUESTS) {
+        let path = e.path();
+        if let Ok(m) = std::fs::symlink_metadata(&path) {
+            #[cfg(unix)]
+            let single = {
+                use std::os::unix::fs::MetadataExt;
+                m.nlink() == 1
+            };
+            #[cfg(not(unix))]
+            let single = true;
+            if m.is_file() && single && m.len() <= MAX_FILE {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.extend(text.split_whitespace().filter(|w| service::valid_name(w)).map(str::to_string));
+                }
+            }
+        }
+        std::fs::remove_file(&path).ok();
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn dir() -> PathBuf {
     PathBuf::from(DIR)
 }
@@ -162,6 +195,19 @@ mod tests {
             assert_eq!(scan(&d, now).len(), 1, "symlinks and hard links are ignored");
             std::fs::remove_file(&outside).ok();
         }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn requests_are_read_once_and_ignored_as_services() {
+        let d = tmp();
+        std::fs::write(d.join(".request-a1"), "check\n").unwrap();
+        std::fs::write(d.join(".request-b2"), "check BAD\n").unwrap();
+        std::fs::write(d.join("agent-inbox"), "port 8832\n").unwrap();
+        assert_eq!(scan(&d, SystemTime::now()).len(), 1, "a request is not a service");
+        assert_eq!(take_requests(&d), vec!["check".to_string()]);
+        assert!(take_requests(&d).is_empty(), "consumed");
+        assert!(d.join("agent-inbox").exists());
         std::fs::remove_dir_all(&d).ok();
     }
 

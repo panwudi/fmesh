@@ -49,6 +49,10 @@ fn main() {
         Some("up") => up(rest),
         Some("supervise") => supervise(rest),
         Some("status") => status(rest),
+        Some("version" | "--version") => {
+            println!("meshd {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("genkey") => {
             println!("{}", b64(&meshproto::new_secret().to_bytes()));
             Ok(())

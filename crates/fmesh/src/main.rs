@@ -8,13 +8,15 @@
 mod install;
 
 use fmesh_core::view::{self, Agents, Device, Filter, View, SHARED_NOTE};
-use fmesh_core::{directory, labels, status};
+use fmesh_core::{directory, labels, modules, status};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 const USAGE: &str = "fmesh status [--json]
 fmesh devices [--json] [--online | --offline | --agent-service] [<search>]
 fmesh agents [--json] [<search>]
+fmesh modules [--json]                (modules on this machine: version, state, updates)
+fmesh update check [--json]           (ask the relays for the current release now)
 fmesh agent <agent-inbox arguments>   (Agent Mesh: send, who, relay, ...)
 fmesh net <meshd arguments>           (Network Mesh: status, up, ...)
 fmesh desktop                         (native device and agent list)
@@ -22,6 +24,7 @@ fmesh install agent|network|desktop   (one module; --dry-run shows the plan)
 fmesh version";
 
 fn main() -> ExitCode {
+    fmesh_core::keep_version_mark();
     let mut args = std::env::args().skip(1);
     let cmd = args.next();
     let rest: Vec<String> = args.collect();
@@ -29,6 +32,8 @@ fn main() -> ExitCode {
         Some("status") => status_cmd(&rest),
         Some("devices") => devices_cmd(&rest),
         Some("agents") => agents_cmd(&rest),
+        Some("modules") => modules_cmd(&rest),
+        Some("update") => update_cmd(&rest),
         Some("agent") => hand_over(&agent_inbox(), &rest),
         Some("net") => hand_over(&meshd(), &rest),
         Some("desktop") => hand_over(&desktop(), &rest),
@@ -53,10 +58,59 @@ fn main() -> ExitCode {
 }
 
 fn load() -> View {
+    load_with_status().0
+}
+
+fn load_with_status() -> (View, status::Status) {
     let (s, _) = status::read(std::path::Path::new(status::STATUS_FILE));
     let l = labels::load();
     let d = directory::query(l.directory_command.as_deref());
-    view::build(&s, &l, &d)
+    (view::build(&s, &l, &d), s)
+}
+
+fn modules_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args, false)?;
+    let (v, s) = load_with_status();
+    let list = modules::local(&s, v.devices.first().filter(|d| d.me), &modules::Disk);
+    if o.json {
+        return print_json(&list);
+    }
+    for m in &list {
+        println!("{}  {}  {}", m.name, m.version_text, m.state);
+        if m.installed {
+            println!("    更新: {}{}", m.policy, if m.update.is_empty() { String::new() } else { format!(" · {}", m.update) });
+        }
+        if let Some(h) = &m.install_hint {
+            println!("    安装: {h}");
+        }
+    }
+    Ok(())
+}
+
+fn update_cmd(args: &[String]) -> Result<(), String> {
+    let (sub, rest) = args.split_first().ok_or(format!("usage:\n{USAGE}"))?;
+    if sub != "check" {
+        return Err(format!("unknown update command {sub}\n{USAGE}"));
+    }
+    let o = opts(rest, false)?;
+    if !o.json {
+        println!("正在检查 (请组网服务立即问中继, 最多 10 秒)...");
+    }
+    let c = modules::check_now(std::time::Duration::from_secs(10));
+    if o.json {
+        let update = match &c {
+            modules::Check::Fresh(s) | modules::Check::Timeout(s) | modules::Check::Unsupported(s) => s.update.clone(),
+            _ => None,
+        };
+        print_json(&serde_json::json!({ "ok": c.ok(), "text": c.text(), "update": update }))?;
+    } else {
+        println!("{}", c.text());
+    }
+    if c.ok() {
+        Ok(())
+    } else {
+        std::process::exit(1)
+    }
 }
 
 struct Opts {

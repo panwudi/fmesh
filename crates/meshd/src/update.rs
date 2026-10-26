@@ -58,6 +58,10 @@ pub struct Updater {
     paused: Option<Download>,
     /// A version whose install failed, and when.
     failed: Option<(u64, Instant)>,
+    /// The newest release a relay announced: version, relay name, when.
+    latest: Option<(u64, String, Instant)>,
+    /// The last thing that went wrong, for the status file.
+    error: Option<String>,
 }
 
 fn read_u64(p: &Path) -> u64 {
@@ -86,6 +90,8 @@ impl Updater {
             dl: None,
             paused: None,
             failed: None,
+            latest: None,
+            error: None,
         };
         u.clean_stale();
         if let Ok(s) = std::fs::read_to_string(&pending_path) {
@@ -117,11 +123,15 @@ impl Updater {
         // Fails on Windows while the supervisor still runs from it; harmless.
         std::fs::remove_file(sibling(&self.exe, ".old")).ok();
         self.installed = v;
+        self.error = None;
         eprintln!("meshd: release v{v} is healthy ({})", release::platform());
     }
 
-    /// A relay announced release `version` with manifest `hash`.
-    pub fn announced(&mut self, sock: &UdpSocket, relay: SocketAddr, version: u64, hash: [u8; 32]) {
+    /// Relay `relay_name` announced release `version` with manifest `hash`.
+    pub fn announced(&mut self, sock: &UdpSocket, relay: SocketAddr, relay_name: &str, version: u64, hash: [u8; 32]) {
+        if self.latest.as_ref().is_none_or(|(v, _, _)| version >= *v) {
+            self.latest = Some((version, relay_name.to_string(), Instant::now()));
+        }
         let recently_failed = self.failed.is_some_and(|(v, t)| v == version && t.elapsed() < RETRY_FAILED);
         if version <= self.installed || version == self.bad || recently_failed || self.pending.is_some() || self.dl.is_some() {
             return;
@@ -195,6 +205,7 @@ impl Updater {
         let Some(d) = &self.dl else { return };
         if d.last_progress.elapsed() > ABANDON {
             eprintln!("meshd: update download stalled, will resume on a later announcement");
+            self.error = Some("download stalled, resuming on the next announcement".into());
             self.paused = self.dl.take();
         } else if d.asked.elapsed() > STALL {
             self.ask(sock);
@@ -204,6 +215,7 @@ impl Updater {
     fn complete(&mut self, sock: &UdpSocket, d: Download) {
         if release::sha256(&d.data) != d.hash {
             eprintln!("meshd: update blob does not match its hash, dropped");
+            self.error = Some("downloaded file does not match its hash".into());
             return;
         }
         match d.want {
@@ -212,11 +224,13 @@ impl Updater {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("meshd: release manifest rejected: {e}");
+                        self.error = Some(format!("manifest rejected: {e}"));
                         return;
                     }
                 };
                 let Some(bin) = rel.for_platform(&release::platform()).cloned() else {
                     eprintln!("meshd: release v{} has no {} binary", rel.version, release::platform());
+                    self.error = Some(format!("release v{} has no {} binary", rel.version, release::platform()));
                     self.record(rel.version);
                     return;
                 };
@@ -231,6 +245,7 @@ impl Updater {
             Want::Binary { version } => {
                 if let Err(e) = self.install(&d.data, version) {
                     eprintln!("meshd: installing release v{version}: {e} (retrying in 10 minutes)");
+                    self.error = Some(format!("installing v{version} failed: {e}"));
                     self.failed = Some((version, Instant::now()));
                     return;
                 }
@@ -255,6 +270,7 @@ impl Updater {
 
     fn record(&mut self, version: u64) {
         self.installed = version;
+        self.error = None;
         std::fs::write(self.dir.join("release.version"), version.to_string()).ok();
     }
 
@@ -297,7 +313,39 @@ impl Updater {
             dl: None,
             paused: None,
             failed: None,
+            latest: None,
+            error: None,
         }
+    }
+
+    /// The `update` line of the status file (docs/network.md section 5):
+    /// `update version <x.y.z> release <n> [latest <n> via <relay> age <s>] state <s>
+    /// [progress <a>/<b>] [bad <n>] [error <text>]`. `latest` is what a relay said last, so
+    /// "up to date" is only as fresh as `age`.
+    pub fn status_line(&self) -> String {
+        let mut s = format!("update version {} release {}", env!("CARGO_PKG_VERSION"), self.installed);
+        if let Some((v, relay, at)) = &self.latest {
+            s += &format!(" latest {v} via {relay} age {}", at.elapsed().as_secs());
+        }
+        let count = |d: &Download| (d.got.iter().filter(|g| **g).count(), d.got.len());
+        let (state, progress) = match (&self.pending, &self.dl, &self.paused) {
+            (Some(_), _, _) => ("trial", None),
+            (_, Some(d), _) if matches!(d.want, Want::Binary { .. }) => ("downloading", Some(count(d))),
+            (_, Some(_), _) => ("checking", None),
+            (_, None, Some(d)) => ("paused", Some(count(d))),
+            _ => ("idle", None),
+        };
+        s += &format!(" state {state}");
+        if let Some((have, total)) = progress {
+            s += &format!(" progress {have}/{total}");
+        }
+        if self.bad > self.installed {
+            s += &format!(" bad {}", self.bad);
+        }
+        if let Some(e) = &self.error {
+            s += &format!(" error {}", e.replace(['\n', '\r'], " "));
+        }
+        s
     }
 
     pub fn status(&self) -> String {
@@ -357,5 +405,24 @@ mod tests {
         assert!(u.dl.is_some(), "the last chunk is still missing");
         u.part(&sock, relay, &part(&hash, blob.len(), 5 * wire::ROSTER_CHUNK, &blob));
         assert!(u.dl.is_none(), "complete");
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn update_line() {
+        let mut u = Updater::bare([0; 32]);
+        u.installed = 11;
+        assert_eq!(u.status_line(), format!("update version {} release 11 state idle", env!("CARGO_PKG_VERSION")));
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        u.latest = Some((12, "sh".into(), Instant::now()));
+        u.bad = 12;
+        u.error = Some("installing v12 failed: denied\nsecond line".into());
+        let _ = &sock;
+        let line = u.status_line();
+        assert!(line.contains(" latest 12 via sh age 0 state idle bad 12 error installing v12 failed: denied second line"), "{line}");
     }
 }

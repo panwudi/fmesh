@@ -7,6 +7,12 @@ set -e
 cd "$(dirname "$0")/../.."
 A="$HOME/.config/flytomesh"
 V=$(( $(cat "$A/release.version" 2>/dev/null || echo 0) + 1 ))
+# Release N is product version 0.N.0: both numbers name the same build.
+CV="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+if [ "$CV" != "0.$V.0" ]; then
+    echo "Cargo.toml version is $CV but this would be release $V: set version = \"0.$V.0\" first" >&2
+    exit 1
+fi
 OUT="$A/release.out"
 rm -rf "$OUT" && mkdir -p "$OUT"
 

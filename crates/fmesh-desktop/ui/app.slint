@@ -31,6 +31,19 @@ export struct DeviceItem {
     agents: [AgentItem],
 }
 
+export struct ModuleItem {
+    index: int,
+    name: string,
+    version: string,
+    state: string,
+    ok: bool,
+    installed: bool,
+    policy: string,
+    update: string,
+    hint: string,
+    path: string,
+}
+
 global Look {
     out property <color> ok: #30d158;
     out property <color> warn: #ff9f0a;
@@ -255,6 +268,95 @@ component DeviceCard inherits Rectangle {
     }
 }
 
+component ModuleCard inherits Rectangle {
+    in property <ModuleItem> module;
+    callback copy-hint();
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Look.line;
+    background: Look.card;
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 11px;
+        padding-bottom: 11px;
+        spacing: 5px;
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Dot { tint: module.ok ? Look.ok : (module.installed ? Look.warn : Look.idle); }
+            }
+            Text {
+                text: module.name;
+                font-size: 15px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                Badge {
+                    text: module.version;
+                    tint: module.installed ? Palette.accent-background : Look.idle;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: module.state;
+                color: module.ok ? Palette.foreground : Look.weak;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+        }
+        if module.installed: HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: "更新方式:";
+                color: Look.weak;
+                font-size: 12px;
+            }
+            Text {
+                text: module.policy;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if module.update != "": Text {
+            text: module.update;
+            color: Look.weak;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        if module.path != "": Text {
+            text: module.path;
+            color: Look.weak;
+            font-size: 11px;
+            overflow: elide;
+        }
+        if module.hint != "": Rectangle {
+            height: hint-text.preferred-height + 12px;
+            border-radius: 7px;
+            background: hint-touch.has-hover ? Palette.accent-background.transparentize(0.8) : Palette.accent-background.transparentize(0.9);
+            accessible-role: button;
+            accessible-label: "复制安装命令 " + module.hint;
+            accessible-action-default => { root.copy-hint(); }
+            hint-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.copy-hint(); }
+            }
+            hint-text := Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: "安装: " + module.hint + (hint-touch.has-hover ? "   (点击复制)" : "");
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "fMesh 设备与 Agent";
     preferred-width: 980px;
@@ -274,8 +376,12 @@ export component AppWindow inherits Window {
     in property <string> hint;
     in property <string> note;
     in property <string> search-hint;
+    in property <[ModuleItem]> modules;
+    in property <bool> checking;
+    in property <[string]> pages: ["设备", "本机模块"];
     in-out property <string> query;
     in-out property <int> filter;
+    in-out property <int> page;
 
     callback search(string);
     callback set-filter(int);
@@ -283,6 +389,9 @@ export component AppWindow inherits Window {
     callback toggle(int);
     callback copy-device(int);
     callback copy-agent(int, int);
+    callback set-page(int);
+    callback check-update();
+    callback copy-hint(int);
 
     forward-focus: keys;
     keys := FocusScope {
@@ -292,6 +401,8 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if (event.modifiers.control || event.modifiers.meta) && (event.text == "f" || event.text == "F") {
+                root.page = 0;
+                root.set-page(0);
                 search-box.focus();
                 return accept;
             }
@@ -307,10 +418,26 @@ export component AppWindow inherits Window {
                 spacing: 12px;
                 VerticalLayout {
                     spacing: 6px;
-                    Text {
-                        text: "设备与 Agent";
-                        font-size: 24px;
-                        font-weight: 700;
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Text {
+                            text: root.page == 0 ? "设备与 Agent" : "本机模块";
+                            font-size: 24px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        for name[i] in root.pages: VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                text: name;
+                                selected: i == root.page;
+                                clicked => {
+                                    root.page = i;
+                                    root.set-page(i);
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
                     HorizontalLayout {
                         spacing: 8px;
@@ -348,37 +475,61 @@ export component AppWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
                 VerticalLayout {
                     alignment: center;
-                    Button {
-                        text: root.loading ? "正在刷新..." : "刷新";
-                        primary: true;
-                        enabled: !root.loading;
-                        clicked => { root.refresh(); }
-                    }
-                }
-            }
-
-            HorizontalLayout {
-                spacing: 8px;
-                search-box := LineEdit {
-                    placeholder-text: root.search-hint;
-                    text <=> root.query;
-                    horizontal-stretch: 1;
-                    edited(text) => { root.search(text); }
-                }
-                for name[i] in root.filters: VerticalLayout {
-                    alignment: center;
-                    Chip {
-                        text: name;
-                        selected: i == root.filter;
-                        clicked => {
-                            root.filter = i;
-                            root.set-filter(i);
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.page == 1: Button {
+                            text: root.checking ? "正在检查..." : "检查更新";
+                            enabled: !root.checking;
+                            clicked => { root.check-update(); }
+                        }
+                        Button {
+                            text: root.loading ? "正在刷新..." : "刷新";
+                            primary: true;
+                            enabled: !root.loading;
+                            clicked => { root.refresh(); }
                         }
                     }
                 }
             }
 
-            ListView {
+            // Hidden on the modules page; kept (not `if`) so Ctrl+F can focus the search box.
+            Rectangle {
+                height: root.page == 0 ? search-row.preferred-height : 0px;
+                clip: true;
+                search-row := HorizontalLayout {
+                    spacing: 8px;
+                    search-box := LineEdit {
+                        placeholder-text: root.search-hint;
+                        text <=> root.query;
+                        horizontal-stretch: 1;
+                        edited(text) => { root.search(text); }
+                    }
+                    for name[i] in root.filters: VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            text: name;
+                            selected: i == root.filter;
+                            clicked => {
+                                root.filter = i;
+                                root.set-filter(i);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.page == 1: ListView {
+                vertical-stretch: 1;
+                for module[i] in root.modules: VerticalLayout {
+                    padding-bottom: 10px;
+                    ModuleCard {
+                        module: module;
+                        copy-hint => { root.copy-hint(module.index); }
+                    }
+                }
+            }
+
+            if root.page == 0: ListView {
                 vertical-stretch: 1;
                 for device[i] in root.devices: VerticalLayout {
                     padding-bottom: 10px;
@@ -400,7 +551,7 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                 }
                 Text {
-                    text: root.count;
+                    text: root.page == 0 ? root.count : "";
                     color: Look.weak;
                     font-size: 12px;
                 }
