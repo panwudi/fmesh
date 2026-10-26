@@ -244,7 +244,7 @@ impl Updater {
         }
         let (Some(total), Some(off)) = (wire::get_u32(&b[32..]), wire::get_u32(&b[36..])) else { return };
         let (total, off, bytes) = (total as usize, off as usize, &b[40..]);
-        if total > 64 << 20 || off % wire::ROSTER_CHUNK != 0 || off + bytes.len() > total {
+        if total > 64 << 20 || off % wire::ROSTER_CHUNK != 0 || off + bytes.len() > total || bytes.is_empty() || off >= total {
             return;
         }
         if d.got.is_empty() {

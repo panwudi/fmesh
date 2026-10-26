@@ -45,11 +45,19 @@ module() { # name platform path
     cp "$3" "$OUT/$h"
     printf '#fmesh module %s %s %s %s\n' "$1" "$2" "$h" "$(wc -c < "$3" | tr -d ' ')" >> "$BODY"
 }
-for m in fmesh meshtray fmesh-desktop agent-inbox; do module $m macos-aarch64 target/release/$m; done
-for a in x86_64 aarch64; do
-    for m in fmesh agent-inbox; do module $m linux-$a target/$a-unknown-linux-gnu/release/$m; done
+# MODULE_PLATFORMS limits which platforms get module files, to try a release on a few machines
+# first (e.g. MODULE_PLATFORMS=macos-aarch64). Machines of other platforms only update meshd.
+MP="${MODULE_PLATFORMS:-macos-aarch64 linux-x86_64 linux-aarch64 windows-x86_64}"
+for p in $MP; do
+    case "$p" in
+        macos-aarch64) for m in fmesh meshtray fmesh-desktop agent-inbox; do module $m $p target/release/$m; done ;;
+        linux-x86_64 | linux-aarch64)
+            a=${p#linux-}
+            for m in fmesh agent-inbox; do module $m $p target/$a-unknown-linux-gnu/release/$m; done ;;
+        windows-x86_64) for m in fmesh meshtray fmesh-desktop; do module $m $p target/x86_64-pc-windows-gnu/release/$m.exe; done ;;
+        *) echo "unknown module platform $p" >&2; exit 1 ;;
+    esac
 done
-for m in fmesh meshtray fmesh-desktop; do module $m windows-x86_64 target/x86_64-pc-windows-gnu/release/$m.exe; done
 target/mesh/meshd release-sign --admin-key "$A/admin.key" < "$BODY" > "$OUT/manifest"
 rm "$BODY"
 

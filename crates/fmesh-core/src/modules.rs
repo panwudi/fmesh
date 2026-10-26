@@ -467,9 +467,11 @@ pub fn install_agent(from: &Path, target: &Path) -> Result<String, String> {
     std::fs::copy(target, PathBuf::from(prev)).map_err(|e| format!("备份旧程序: {e}"))?;
     std::fs::rename(&new, target).map_err(|e| format!("替换 {}: {e}", target.display()))?;
     let (restarted, manual) = restart_agent_services(target);
-    let mut text = String::from("已更新 agent-inbox");
+    let mut text = String::from("已替换 agent-inbox 程序");
     if !restarted.is_empty() {
         text += &format!(", 已重启 {} 个后台服务 ({})", restarted.len(), restarted.join(", "));
+    } else if manual.is_empty() {
+        text += ". 注意: 没有找到运行中的本机 Agent 后台服务, 本机中继可能仍在用旧程序, 请手动重启它";
     }
     if !manual.is_empty() {
         text += &format!("; 需要管理员重启: {}", manual.join(", "));
@@ -497,12 +499,19 @@ fn restart_agent_services(target: &Path) -> (Vec<String>, Vec<String>) {
             if !f.ends_with(".plist") || output("plutil", &["-extract", "ProgramArguments.0", "raw", "-o", "-", &f]).as_deref() != Some(t.as_ref()) {
                 continue;
             }
-            // Only jobs kept running (relay, watchers); scheduled ones pick it up next run.
-            if output("plutil", &["-extract", "KeepAlive", "raw", "-o", "-", &f]).is_none_or(|k| k == "false") {
+            // Only jobs kept running (relay, watchers) and running now; scheduled ones pick the
+            // new program up on their next run and are never interrupted. KeepAlive may be a
+            // bool or a dict.
+            let keep = output("plutil", &["-extract", "KeepAlive", "xml1", "-o", "-", &f]).unwrap_or_default();
+            if keep.is_empty() || (keep.contains("<false/>") && !keep.contains("<dict")) {
                 continue;
             }
             let Some(label) = output("plutil", &["-extract", "Label", "raw", "-o", "-", &f]) else { continue };
-            if output("launchctl", &["kickstart", "-k", &format!("gui/{uid}/{label}")]).is_some() {
+            let job = format!("gui/{uid}/{label}");
+            if !output("launchctl", &["print", &job]).is_some_and(|p| p.contains("state = running")) {
+                continue;
+            }
+            if output("launchctl", &["kickstart", "-k", &job]).is_some() {
                 restarted.push(label);
             } else {
                 manual.push(label);
@@ -700,7 +709,7 @@ mod tests {
         std::fs::write(&from, b"new").unwrap();
         std::fs::write(&target, b"old").unwrap();
         let text = install_agent(&from, &target).unwrap();
-        assert!(text.starts_with("已更新 agent-inbox"), "{text}");
+        assert!(text.starts_with("已替换 agent-inbox 程序"), "{text}");
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         assert_eq!(std::fs::read(d.join("agent-inbox.prev")).unwrap(), b"old");
         std::fs::remove_dir_all(&d).ok();
