@@ -22,12 +22,12 @@ const OFFLINE_AFTER: Duration = Duration::from_secs(60);
 const MAX_SKEW_NANOS: u64 = 60_000_000_000;
 const TICK: Duration = Duration::from_secs(1);
 const ROSTER_CHECK: Duration = Duration::from_secs(5);
-/// Roster and release bytes a node may pull in a burst. A full update (manifest + one binary)
-/// is about 1 MB, so this allows several, while a spoofed source address can turn a relay into
-/// an amplifier aimed at a registered node for at most this much plus `FETCH_REFILL`.
+/// Roster and release bytes a node may pull in a burst, at least. A meshd update (manifest +
+/// one binary) is about 1 MB, so this allows several. With module files published the burst
+/// grows to twice the largest single-platform release (see `Published::burst`), so one node can
+/// fetch everything for its platform once, re-asks included. A spoofed source address turns a
+/// relay into an amplifier aimed at a registered node for at most one burst, refilled hourly.
 const FETCH_BURST: f64 = 8.0 * 1024.0 * 1024.0;
-/// Budget refill, bytes per second (another burst per hour).
-const FETCH_REFILL: f64 = FETCH_BURST / 3600.0;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -95,10 +95,11 @@ impl Node {
         self.last_seen.is_some_and(|t| now.duration_since(t) < OFFLINE_AFTER)
     }
 
-    /// Takes `bytes` from the fetch budget; false (and nothing taken) when it is used up.
-    fn spend(&mut self, bytes: usize, now: Instant) -> bool {
-        let refill = now.duration_since(self.budget_at).as_secs_f64() * FETCH_REFILL;
-        self.budget = (self.budget + refill).min(FETCH_BURST);
+    /// Takes `bytes` from the fetch budget (at most `burst`, refilled over an hour); false (and
+    /// nothing taken) when it is used up.
+    fn spend(&mut self, bytes: usize, now: Instant, burst: f64) -> bool {
+        let refill = now.duration_since(self.budget_at).as_secs_f64() * burst / 3600.0;
+        self.budget = (self.budget + refill).min(burst);
         self.budget_at = now;
         if self.budget < bytes as f64 {
             return false;
@@ -119,17 +120,39 @@ struct Relay {
     nodes: HashMap<u16, Node>,
     by_addr: HashMap<SocketAddr, u16>,
     events: Events,
-    /// `<dir>/release`: a signed manifest plus the binaries it lists, named by SHA-256 hex.
+    /// `<dir>/release`: a signed manifest plus the files it lists, named by SHA-256 hex.
     release_dir: PathBuf,
     release_mtime: Option<SystemTime>,
     release: Option<Published>,
 }
 
-/// The release this relay hands out: version, manifest hash, and every blob by SHA-256.
+/// The release this relay hands out: version, the manifest itself, and the size of every file
+/// it lists by SHA-256. Files are read from `release_dir` when asked for, not kept in memory;
+/// nodes check the hash of what they receive.
 struct Published {
     version: u64,
     manifest: [u8; 32],
-    blobs: HashMap<[u8; 32], Vec<u8>>,
+    raw: Vec<u8>,
+    files: HashMap<[u8; 32], u64>,
+    /// Per-node fetch budget while this release is out.
+    burst: f64,
+}
+
+impl Published {
+    fn new(rel: &Release, raw: Vec<u8>) -> Published {
+        let mut per_platform: HashMap<&str, u64> = HashMap::new();
+        for f in rel.files() {
+            *per_platform.entry(&f.platform).or_default() += f.size;
+        }
+        let largest = per_platform.values().max().copied().unwrap_or(0) + raw.len() as u64;
+        Published {
+            version: rel.version,
+            manifest: release::sha256(&raw),
+            files: rel.files().map(|f| (f.sha256, f.size)).collect(),
+            burst: FETCH_BURST.max(2.0 * largest as f64),
+            raw,
+        }
+    }
 }
 
 fn run(args: &[String]) -> io::Result<()> {
@@ -198,6 +221,16 @@ fn run(args: &[String]) -> io::Result<()> {
     }
 }
 
+/// Up to `len` bytes of `path` from `off`; shorter at the end of the file.
+fn read_range(path: &std::path::Path, off: u64, len: usize) -> io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(off))?;
+    let mut out = Vec::with_capacity(len);
+    f.take(len as u64).read_to_end(&mut out)?;
+    Ok(out)
+}
+
 fn mtime(path: &str) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -219,7 +252,7 @@ impl Relay {
                     last_ts: 0,
                     last_seen: None,
                     alerted: false,
-                    budget: FETCH_BURST,
+                    budget: self.burst(),
                     budget_at: Instant::now(),
                 },
             };
@@ -227,6 +260,10 @@ impl Relay {
         }
         self.by_addr = self.nodes.iter().filter_map(|(id, n)| n.addr.map(|a| (a, *id))).collect();
         self.roster = roster;
+    }
+
+    fn burst(&self) -> f64 {
+        self.release.as_ref().map_or(FETCH_BURST, |p| p.burst)
     }
 
     fn reload_if_changed(&mut self) {
@@ -324,15 +361,17 @@ impl Relay {
         out.extend_from_slice(&(raw.len() as u32).to_be_bytes());
         out.extend_from_slice(&(off as u32).to_be_bytes());
         out.extend_from_slice(&raw[off..end]);
+        let burst = self.burst();
         let Some(node) = self.nodes.get_mut(&id) else { return };
-        if node.spend(out.len(), Instant::now()) {
+        if node.spend(out.len(), Instant::now(), burst) {
             self.sock.send_to(&out, src).ok();
         }
     }
 
-    /// Loads `<dir>/release/manifest` and the binaries it lists when the manifest changes.
-    /// A manifest that does not verify, or a listed binary that is missing or does not hash to
-    /// its entry, is refused as a whole and the previous release stays published.
+    /// Loads `<dir>/release/manifest` and checks the files it lists when the manifest changes.
+    /// A manifest that does not verify, or a listed file that is missing or does not hash to
+    /// its entry, is refused as a whole and the previous release stays published. A new release
+    /// tops every node's budget up to its burst, so each can fetch it once right away.
     fn reload_release_if_changed(&mut self) {
         let path = self.release_dir.join("manifest");
         let m = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -343,21 +382,25 @@ impl Relay {
         let loaded = (|| -> io::Result<Published> {
             let raw = std::fs::read(&path)?;
             let rel = Release::parse_verified(&raw, &self.admin_pub)?;
-            let mut blobs = HashMap::new();
-            for b in &rel.meshd {
+            for b in rel.files() {
                 let data = std::fs::read(self.release_dir.join(release::hex(&b.sha256)))?;
                 if release::sha256(&data) != b.sha256 || data.len() as u64 != b.size {
-                    return Err(meshproto::invalid(&format!("{} binary does not match the manifest", b.platform)));
+                    return Err(meshproto::invalid(&format!("{} {} does not match the manifest", b.module, b.platform)));
                 }
-                blobs.insert(b.sha256, data);
             }
-            let manifest = release::sha256(&raw);
-            blobs.insert(manifest, raw);
-            Ok(Published { version: rel.version, manifest, blobs })
+            Ok(Published::new(&rel, raw))
         })();
         match loaded {
             Ok(p) if self.release.as_ref().is_none_or(|old| p.version > old.version) => {
-                eprintln!("mesh-relay: release v{} published ({} binaries)", p.version, p.blobs.len() - 1);
+                eprintln!(
+                    "mesh-relay: release v{} published ({} files, fetch budget {} MiB per node)",
+                    p.version,
+                    p.files.len(),
+                    (p.burst / 1048576.0).ceil()
+                );
+                for n in self.nodes.values_mut() {
+                    n.budget = n.budget.max(p.burst);
+                }
                 self.release = Some(p);
             }
             Ok(p) => eprintln!("mesh-relay: release v{} is not newer, ignored", p.version),
@@ -378,24 +421,33 @@ impl Relay {
         let b = &p[wire::HDR..];
         let hash: [u8; 32] = b[..32].try_into().expect("32 bytes");
         let (Some(off), count) = (wire::get_u32(&b[32..]), b[36].min(wire::BLOB_WINDOW)) else { return };
-        let Some(data) = rel.blobs.get(&hash) else { return };
-        let mut off = off as usize;
-        for _ in 0..count {
-            if off >= data.len() {
-                break;
+        let off = off as usize;
+        let window = count as usize * wire::ROSTER_CHUNK;
+        let (total, data) = if hash == rel.manifest {
+            let end = (off + window).min(rel.raw.len());
+            (rel.raw.len(), rel.raw.get(off..end).unwrap_or_default().to_vec())
+        } else {
+            let Some(&size) = rel.files.get(&hash) else { return };
+            match read_range(&self.release_dir.join(release::hex(&hash)), off as u64, window.min(size.saturating_sub(off as u64) as usize)) {
+                Ok(d) => (size as usize, d),
+                Err(e) => {
+                    eprintln!("mesh-relay: reading release file {}: {e}", release::hex(&hash));
+                    return;
+                }
             }
-            let end = (off + wire::ROSTER_CHUNK).min(data.len());
-            let mut out = Vec::with_capacity(wire::HDR + 40 + end - off);
+        };
+        for (i, piece) in data.chunks(wire::ROSTER_CHUNK).enumerate() {
+            let at = off + i * wire::ROSTER_CHUNK;
+            let mut out = Vec::with_capacity(wire::HDR + 40 + piece.len());
             out.extend_from_slice(&wire::header(wire::BLOB_PART, 0));
             out.extend_from_slice(&hash);
-            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            out.extend_from_slice(&(off as u32).to_be_bytes());
-            out.extend_from_slice(&data[off..end]);
-            if !node.spend(out.len(), Instant::now()) {
+            out.extend_from_slice(&(total as u32).to_be_bytes());
+            out.extend_from_slice(&(at as u32).to_be_bytes());
+            out.extend_from_slice(piece);
+            if !node.spend(out.len(), Instant::now(), rel.burst) {
                 break;
             }
             self.sock.send_to(&out, src).ok();
-            off = end;
         }
     }
 
@@ -533,12 +585,116 @@ mod tests {
         };
         let chunk = wire::HDR + 40 + wire::ROSTER_CHUNK;
         let mut sent = 0;
-        while n.spend(chunk, now) {
+        while n.spend(chunk, now, FETCH_BURST) {
             sent += chunk;
         }
         assert!(sent as f64 <= FETCH_BURST && sent as f64 > FETCH_BURST - chunk as f64);
-        assert!(!n.spend(chunk, now + Duration::from_millis(100)), "refill is slow");
-        assert!(n.spend(chunk, now + Duration::from_secs(2)), "but it comes back");
+        assert!(!n.spend(chunk, now + Duration::from_millis(100), FETCH_BURST), "refill is slow");
+        assert!(n.spend(chunk, now + Duration::from_secs(2), FETCH_BURST), "but it comes back");
+    }
+
+    /// A relay with one registered node (id 1) at `client`, publishing `files` (module, data)
+    /// for linux-x86_64 from a fresh directory.
+    fn relay_with_release(files: &[(&str, &[u8])], client: SocketAddr) -> (Relay, PathBuf) {
+        let seed = [9u8; 32];
+        let dir = std::env::temp_dir().join(format!("mesh-relay-test-{}-{}", std::process::id(), meshproto::random_u64()));
+        std::fs::create_dir_all(dir.join("release")).unwrap();
+        let mut body = "flytomesh-release 1\nversion 10\n".to_string();
+        for (module, data) in files {
+            let h = release::hex(&release::sha256(data));
+            std::fs::write(dir.join("release").join(&h), data).unwrap();
+            let prefix = if *module == "meshd" { String::new() } else { "#fmesh module ".to_string() };
+            body += &format!("{prefix}{module} linux-x86_64 {h} {}\n", data.len());
+        }
+        std::fs::write(dir.join("release/manifest"), release::sign(&body, &seed).unwrap()).unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            1,
+            Node {
+                name: "laptop1".into(),
+                key: pair().0,
+                addr: Some(client),
+                last_ts: 0,
+                last_seen: Some(Instant::now()),
+                alerted: false,
+                budget: 0.0,
+                budget_at: Instant::now(),
+            },
+        );
+        let r = Relay {
+            sock,
+            secret: x25519::StaticSecret::from([7u8; 32]),
+            name: "relay1".into(),
+            roster_path: String::new(),
+            roster_mtime: None,
+            admin_pub: meshproto::roster::admin_public(&seed).unwrap(),
+            roster: Roster { version: 0, relays: vec![], nodes: vec![], raw: vec![] },
+            nodes,
+            by_addr: HashMap::from([(client, 1)]),
+            events: Events { url: None, cmd: None, token: None, relay: String::new() },
+            release_dir: dir.join("release"),
+            release_mtime: None,
+            release: None,
+        };
+        (r, dir)
+    }
+
+    #[test]
+    fn module_files_are_served_and_the_budget_covers_a_platform() {
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let meshd = vec![1u8; 3000];
+        let agent: Vec<u8> = (0..20_000u32).map(|i| i as u8).collect();
+        let (mut r, dir) = relay_with_release(&[("meshd", &meshd), ("agent-inbox", &agent)], client.local_addr().unwrap());
+        r.reload_release_if_changed();
+        let p = r.release.as_ref().expect("published");
+        assert_eq!(p.files.len(), 2);
+        assert_eq!(p.burst, FETCH_BURST, "small releases keep the floor");
+        assert_eq!(r.nodes[&1].budget, FETCH_BURST, "a new release tops the budget up");
+
+        let hash = release::sha256(&agent);
+        let mut got = vec![0u8; agent.len()];
+        let mut filled = 0;
+        let mut off = 0u32;
+        while filled < agent.len() {
+            let mut m = wire::header(wire::BLOB_GET, 0).to_vec();
+            m.extend_from_slice(&hash);
+            m.extend_from_slice(&off.to_be_bytes());
+            m.push(wire::BLOB_WINDOW);
+            r.blob_parts(&m, client.local_addr().unwrap());
+            let mut buf = [0u8; 2048];
+            for _ in 0..wire::BLOB_WINDOW {
+                let Ok(n) = client.recv(&mut buf) else { break };
+                let b = &buf[wire::HDR..n];
+                assert_eq!(&b[..32], &hash);
+                assert_eq!(wire::get_u32(&b[32..]), Some(agent.len() as u32));
+                let at = wire::get_u32(&b[36..]).unwrap() as usize;
+                got[at..at + b.len() - 40].copy_from_slice(&b[40..]);
+                filled += b.len() - 40;
+                off = (at + b.len() - 40) as u32;
+                if filled == agent.len() {
+                    break;
+                }
+            }
+        }
+        assert_eq!(got, agent);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn burst_grows_with_the_largest_platform() {
+        let big = 6 * 1024 * 1024;
+        let rel = Release {
+            version: 11,
+            meshd: vec![release::Binary { module: "meshd".into(), platform: "a".into(), sha256: [1; 32], size: 1 << 20 }],
+            modules: vec![
+                release::Binary { module: "fmesh-desktop".into(), platform: "a".into(), sha256: [2; 32], size: big },
+                release::Binary { module: "fmesh-desktop".into(), platform: "b".into(), sha256: [3; 32], size: big },
+            ],
+        };
+        let p = Published::new(&rel, vec![0; 100]);
+        assert_eq!(p.burst, 2.0 * ((1 << 20) + big + 100) as f64);
     }
 
     #[test]

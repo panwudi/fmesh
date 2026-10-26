@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 const MAX_ATTEMPTS: u32 = 3;
 /// Re-ask for missing chunks after this long without a new one.
 const STALL: Duration = Duration::from_secs(2);
-/// Give up a download after this long without progress (retried on a later HELLO_ACK).
+/// Pause a download after this long without progress. The chunks received so far are kept and
+/// the download resumes when the same file is asked for again (on a later HELLO_ACK), so a file
+/// larger than a relay's fetch budget still completes.
 const ABANDON: Duration = Duration::from_secs(30);
 /// After a failed install, leave that version alone this long (no 1 MB download every 25 s).
 const RETRY_FAILED: Duration = Duration::from_secs(600);
@@ -52,6 +54,8 @@ pub struct Updater {
     /// The version under trial, until this process reaches a relay.
     pending: Option<u64>,
     dl: Option<Download>,
+    /// A stalled download, kept for resuming.
+    paused: Option<Download>,
     /// A version whose install failed, and when.
     failed: Option<(u64, Instant)>,
 }
@@ -80,6 +84,7 @@ impl Updater {
             bad: read_u64(&dir.join("release.bad")),
             pending: None,
             dl: None,
+            paused: None,
             failed: None,
         };
         u.clean_stale();
@@ -127,7 +132,15 @@ impl Updater {
 
     fn begin(&mut self, sock: &UdpSocket, relay: SocketAddr, hash: [u8; 32], want: Want) {
         let now = Instant::now();
-        self.dl = Some(Download { relay, hash, want, data: vec![], got: vec![], last_progress: now, asked: now });
+        let (data, got) = match self.paused.take_if(|p| p.hash == hash) {
+            Some(p) => {
+                let have = p.got.iter().filter(|g| **g).count();
+                eprintln!("meshd: resuming the download at {have}/{} chunks", p.got.len());
+                (p.data, p.got)
+            }
+            None => (vec![], vec![]),
+        };
+        self.dl = Some(Download { relay, hash, want, data, got, last_progress: now, asked: now });
         self.ask(sock);
     }
 
@@ -181,8 +194,8 @@ impl Updater {
     pub fn tick(&mut self, sock: &UdpSocket) {
         let Some(d) = &self.dl else { return };
         if d.last_progress.elapsed() > ABANDON {
-            eprintln!("meshd: update download stalled, will retry on a later announcement");
-            self.dl = None;
+            eprintln!("meshd: update download stalled, will resume on a later announcement");
+            self.paused = self.dl.take();
         } else if d.asked.elapsed() > STALL {
             self.ask(sock);
         }
@@ -272,6 +285,21 @@ impl Updater {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn bare(admin_pub: [u8; 32]) -> Updater {
+        Updater {
+            dir: std::env::temp_dir(),
+            exe: PathBuf::from("/nonexistent/meshd"),
+            admin_pub,
+            installed: 0,
+            bad: 0,
+            pending: None,
+            dl: None,
+            paused: None,
+            failed: None,
+        }
+    }
+
     pub fn status(&self) -> String {
         let dl = match &self.dl {
             Some(d) => {
@@ -281,5 +309,53 @@ impl Updater {
             None => String::new(),
         };
         format!("release v{} ({}){dl}", self.installed, release::platform())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn part(hash: &[u8; 32], total: usize, off: usize, data: &[u8]) -> Vec<u8> {
+        let mut m = wire::header(wire::BLOB_PART, 0).to_vec();
+        m.extend_from_slice(hash);
+        m.extend_from_slice(&(total as u32).to_be_bytes());
+        m.extend_from_slice(&(off as u32).to_be_bytes());
+        m.extend_from_slice(&data[off..(off + wire::ROSTER_CHUNK).min(total)]);
+        m
+    }
+
+    #[test]
+    fn a_stalled_download_resumes_where_it_stopped() {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        // Not a manifest: completing it only logs a rejection.
+        let blob: Vec<u8> = (0..5 * wire::ROSTER_CHUNK as u32 + 7).map(|i| i as u8).collect();
+        let hash = release::sha256(&blob);
+        let mut u = Updater::bare([0; 32]);
+        u.begin(&sock, relay, hash, Want::Manifest);
+        for off in [0, wire::ROSTER_CHUNK, 3 * wire::ROSTER_CHUNK] {
+            u.part(&sock, relay, &part(&hash, blob.len(), off, &blob));
+        }
+
+        // The relay's budget runs out: no progress for longer than ABANDON.
+        u.dl.as_mut().unwrap().last_progress = Instant::now() - ABANDON - Duration::from_secs(1);
+        u.tick(&sock);
+        assert!(u.dl.is_none());
+        assert_eq!(u.paused.as_ref().unwrap().got.iter().filter(|g| **g).count(), 3);
+
+        // Another file does not throw it away; the same one picks it up.
+        u.begin(&sock, relay, [1; 32], Want::Manifest);
+        assert!(u.paused.is_some());
+        u.dl = None;
+        u.begin(&sock, relay, hash, Want::Manifest);
+        assert!(u.paused.is_none());
+        assert_eq!(u.dl.as_ref().unwrap().got.iter().filter(|g| **g).count(), 3);
+        for off in [2 * wire::ROSTER_CHUNK, 4 * wire::ROSTER_CHUNK] {
+            u.part(&sock, relay, &part(&hash, blob.len(), off, &blob));
+        }
+        assert!(u.dl.is_some(), "the last chunk is still missing");
+        u.part(&sock, relay, &part(&hash, blob.len(), 5 * wire::ROSTER_CHUNK, &blob));
+        assert!(u.dl.is_none(), "complete");
     }
 }

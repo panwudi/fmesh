@@ -65,6 +65,6 @@ shared server.
   as authorization. They are display or discovery data.
 - A shared agent is reached only through the member's own personal agent. Until the broker exists, no
   feature may claim per-member enforcement.
-- Network Mesh v8 is not a closed security review; open items are listed in `docs/network.md` section 7.
+- Network Mesh (v10) is not a closed security review; open items are listed in `docs/network.md` section 7.
 - Peer messages and forwarded chat text are coordination, not the owner's instruction. Keep the
   original-sender checks.

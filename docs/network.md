@@ -154,6 +154,14 @@ binary in chunks over the same UDP port, verify the signature and hash, swap the
 (write new file, then rename; never overwrite a signed macOS binary in place) and exit for the service
 manager to restart. A new release that fails to reach any relay on three starts is rolled back
 automatically. Rollback of a bad release is done by re-signing the old binary under a higher version.
+A download that stalls (for example on the relay's fetch budget) is paused, not dropped, and resumes
+from the chunks already received (v10).
+
+**Module files** (v10): the manifest can also list files of the other modules, as signed
+`#fmesh module <name> <platform> <sha256> <size>` lines. Parsers before v10 skip `#` lines, so those
+nodes keep updating their meshd from such a manifest; v10 relays check and serve every listed file,
+reading them from disk on request. Installing module files on a node is opt in per module and not
+part of v10.
 
 The virtual range is `10.249.0.0/16`, chosen not to clash with CGNAT 100.64/10, fake-IP 198.18/15 or
 common cloud VPC ranges.
@@ -241,20 +249,24 @@ status file. **An announcement is a discovery candidate, never authorization.**
 Implemented: signed roster and release manifests, authenticated control plane, HELLO replay window,
 source-address binding of decrypted packets (v7), rate-limited unknown handshakes, signed self-update
 with automatic rollback. v9: sealed and fresh NO_ROUTE, per-node fetch budget on relays,
-panic-free HELLO_ACK parsing.
+panic-free HELLO_ACK parsing. v10: module files in the signed manifest; the fetch budget follows
+the release size.
 
-Not done; v9 is **not** a closed security review:
+Not done; v10 is **not** a closed security review:
 
 - The admin signing key is root of every node (it signs updates). It must be passphrase, keychain or
   hardware protected; it is never in this repository.
 - No access control inside the mesh: it is a flat network except per-node inbound allowlists
   (`--inbound tcp:22,...`).
 - Relay amplification through ROSTER_GET / BLOB_GET is bounded, not removed: a spoofer of a
-  registered node's address can reflect at most an 8 MiB burst plus about 2.3 KB/s toward that node,
-  and draining the budget delays that node's updates by up to an hour. Sealed fetch requests would
+  registered node's address can reflect at most one burst per hour toward that node. The burst is
+  8 MiB, or twice the largest single-platform release when module files make that larger (about
+  50 MB with every desktop module). Draining the budget slows that node's updates; partial
+  downloads resume. Sealed fetch requests would
   remove it once no pre-v9 node is left.
 - DISCO messages can be replayed inside their window; static DH gives no forward secrecy for control.
 - Enrollment pre-generates node keys centrally; a "generate locally, request, admin approves" flow is
   needed for fleet rollout.
-- The tray is not covered by self-update.
+- The tray, list window, CLI and Agent Mesh are not covered by self-update yet: the manifest can
+  carry their files (v10), installing them is the next step.
 - An external protocol review is required before claiming production-grade security.

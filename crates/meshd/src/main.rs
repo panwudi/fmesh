@@ -226,6 +226,9 @@ fn release_check(args: &[String]) -> io::Result<()> {
     for b in &r.meshd {
         println!("  {} {} {}", b.platform, meshproto::release::hex(&b.sha256), b.size);
     }
+    for b in &r.modules {
+        println!("  module {} {} {} {}", b.module, b.platform, meshproto::release::hex(&b.sha256), b.size);
+    }
     Ok(())
 }
 
