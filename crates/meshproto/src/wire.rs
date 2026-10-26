@@ -46,11 +46,13 @@ pub const ROSTER_CHUNK: usize = 1200;
 /// DISCO kinds. CALL body: `[n u8][n x addr (ip4, port)][m u8][m x (relay index u8, rtt ms u16)]`,
 /// the sender's candidate addresses and its RTT to each live relay (relay index = position
 /// in the roster). PING body: `[txid u64]`. PONG body: `[txid u64][addr the ping came from]`.
-/// SERVICES body: see `crate::service` (older nodes ignore unknown kinds).
+/// SERVICES and MODULES bodies: see `crate::service` (older nodes ignore unknown kinds).
 pub const CALL: u8 = 1;
 pub const PING: u8 = 2;
 pub const PONG: u8 = 3;
 pub const SERVICES: u8 = 4;
+/// Since v13: the fMesh modules the sender has, with versions.
+pub const MODULES: u8 = 5;
 
 pub fn is_wireguard(p: &[u8]) -> bool {
     p.len() >= 4 && (1..=4).contains(&p[0]) && p[1..4] == [0, 0, 0]

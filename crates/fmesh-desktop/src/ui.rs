@@ -60,6 +60,7 @@ fn item(i: usize, d: &Device, expanded: bool) -> DeviceItem {
         online: d.online(),
         stopped: d.link == Link::NetworkStopped,
         detail: detail.join("  ·  ").into(),
+        modules: d.modules_text().into(),
         owner: d.owner_text().into(),
         service: match &d.agents {
             Agents::Listed { .. } => format!("Agent · {}", d.agents_text()),

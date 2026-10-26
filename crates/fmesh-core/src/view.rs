@@ -61,6 +61,8 @@ pub struct Device {
     /// Port of a fresh agent service announcement.
     pub agent_port: Option<u16>,
     pub agents: Agents,
+    /// The modules it announces (meshd 0.13 and later); `None`: no announcement.
+    pub modules: Option<Vec<crate::status::ModuleVersion>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -116,6 +118,29 @@ impl Device {
             Some(s) if s < 7200 => format!("{} 分钟前", s / 60),
             Some(s) => format!("{} 小时前", s / 3600),
         }
+    }
+
+    /// "组网 v0.13.0 · 桌面 v0.13.0 · Agent", or "模块未公告" when the node does not say.
+    pub fn modules_text(&self) -> String {
+        let Some(list) = &self.modules else {
+            return if self.online() || self.me { "模块未公告 (0.13 之前的版本不公告)".into() } else { "模块未知 (设备离线)".into() };
+        };
+        list.iter()
+            .map(|m| {
+                let name = match m.name.as_str() {
+                    "network" => "组网",
+                    "desktop" => "桌面",
+                    "cli" => "命令行",
+                    "agent" => "Agent",
+                    other => other,
+                };
+                match &m.version {
+                    Some(v) => format!("{name} v{v}"),
+                    None => name.to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     pub fn service_text(&self) -> String {
@@ -237,6 +262,7 @@ fn local_host(dir: &Directory) -> Option<String> {
 
 pub fn build(s: &Status, labels: &Labels, dir: &Directory) -> View {
     let port = |node: &str| s.service(node, INBOX).map(|x| x.port);
+    let modules_of = |node: &str| s.node_modules.iter().find(|m| m.node == node).map(|m| m.modules.clone());
     let mut devices = Vec::with_capacity(s.peers.len() + 1);
     let me_link = if s.running { Link::Online } else { Link::NetworkStopped };
     // Agent-only machines have no status file: take this host's name from the local
@@ -265,6 +291,7 @@ pub fn build(s: &Status, labels: &Labels, dir: &Directory) -> View {
         shared: labels.shared_hosts.contains(&s.me),
         agent_port: port(&s.me),
         agents: me_agents,
+        modules: modules_of(&s.me),
         name: me_name,
     });
     let mut peers: Vec<_> = s.peers.iter().collect();
@@ -283,6 +310,7 @@ pub fn build(s: &Status, labels: &Labels, dir: &Directory) -> View {
             shared: labels.shared_hosts.contains(&p.name),
             agent_port: port(&p.name),
             agents: agents_for(&[p.name.as_str()], p.online, port(&p.name), dir),
+            modules: modules_of(&p.name),
         });
     }
     let summary = Summary {

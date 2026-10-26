@@ -35,6 +35,8 @@ pub struct Status {
     pub update: Option<Update>,
     /// Module files of the current release this machine has (meshd 0.12 and later).
     pub module_files: Vec<ModuleFile>,
+    /// Modules each node announces (meshd 0.13 and later), this one included.
+    pub node_modules: Vec<NodeModules>,
     /// Seconds since meshd wrote the file (`None`: no file).
     pub file_age: Option<u64>,
 }
@@ -60,6 +62,21 @@ pub struct Update {
     /// Module groups meshd installs without asking (`auto-update`).
     pub auto: Vec<String>,
     pub error: Option<String>,
+}
+
+/// A `modules` line: what one node has. Display data, not authorization.
+#[derive(Default, PartialEq, Clone, Debug, Serialize)]
+pub struct NodeModules {
+    pub node: String,
+    pub modules: Vec<ModuleVersion>,
+}
+
+#[derive(PartialEq, Clone, Debug, Serialize)]
+pub struct ModuleVersion {
+    /// `network`, `desktop`, `cli` or `agent`.
+    pub name: String,
+    /// `None`: the node has it but does not know or say the version.
+    pub version: Option<String>,
 }
 
 /// A `module` line: one module file of the current release on this machine.
@@ -189,6 +206,14 @@ pub fn parse(text: &str, fresh: bool) -> Status {
             }
             ["update", rest @ ..] => s.update = Some(parse_update(rest)),
             ["module", name, state, rest @ ..] => s.module_files.push(parse_module(name, state, rest)),
+            ["modules", node, _ip, "id", _id, rest @ ..] => s.node_modules.push(NodeModules {
+                node: node.to_string(),
+                modules: rest
+                    .iter()
+                    .filter_map(|w| w.split_once('='))
+                    .map(|(n, v)| ModuleVersion { name: n.to_string(), version: (v != "?" && !v.is_empty()).then(|| v.to_string()) })
+                    .collect(),
+            }),
             ["relay", name, _, state, "rtt", rtt, ..] => s.relays.push(Relay { name: name.to_string(), up: *state == "up", rtt: rtt.to_string() }),
             ["peer", name, ip, kind, rest @ ..] => {
                 let path = match *kind {
@@ -220,10 +245,12 @@ pub fn parse(text: &str, fresh: bool) -> Status {
         s.peers.iter_mut().for_each(|p| p.online = false);
         s.relays.iter_mut().for_each(|r| r.up = false);
         s.services.clear();
+        s.node_modules.clear();
     }
     // A peer's announcement only counts while the peer is online.
     let offline: Vec<String> = s.peers.iter().filter(|p| !p.online).map(|p| p.name.clone()).collect();
     s.services.retain(|x| x.local || !offline.contains(&x.node));
+    s.node_modules.retain(|x| !offline.contains(&x.node));
     s
 }
 
@@ -309,6 +336,10 @@ mod tests {
         assert_eq!(m.update.unwrap().auto, ["desktop", "cli"]);
         assert_eq!((m.module_files[0].state.as_str(), m.module_files[0].path.as_str()), ("ready", "/c/ab"));
         assert_eq!(m.module_files[1].progress, Some((2, 9)));
+        let n = parse(&format!("{SAMPLE}modules laptop2 10.249.0.2 id 2 network=0.13.0 desktop=? agent=?\nmodules old 10.249.0.13 id 13 network=0.13.0\n"), true);
+        assert_eq!(n.node_modules.len(), 1, "offline nodes are dropped");
+        assert_eq!(n.node_modules[0].modules[0], ModuleVersion { name: "network".into(), version: Some("0.13.0".into()) });
+        assert_eq!(n.node_modules[0].modules[1].version, None);
     }
 
     #[test]

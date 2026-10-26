@@ -235,6 +235,7 @@ fn print_device(d: &Device, query: &str) {
         println!("    {SHARED_NOTE}");
     }
     println!("    {} · {}", d.service_text(), d.agents_text());
+    println!("    模块: {}", d.modules_text());
     if let Agents::Listed { agents } = &d.agents {
         for a in agents {
             let hit = if d.matches_agent(query) && format!("{} {}", a.name, a.role).to_lowercase().contains(&query.to_lowercase()) { "*" } else { " " };

@@ -24,6 +24,7 @@ export struct DeviceItem {
     online: bool,
     stopped: bool,
     detail: string,
+    modules: string,
     owner: string,
     service: string,
     has-agents: bool,
@@ -243,6 +244,12 @@ component DeviceCard inherits Rectangle {
                     horizontal-alignment: center;
                 }
             }
+        }
+        Text {
+            text: "模块: " + device.modules;
+            color: Look.weak;
+            font-size: 11px;
+            overflow: elide;
         }
         if device.shared: Rectangle {
             height: shared-note.preferred-height + 12px;

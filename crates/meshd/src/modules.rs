@@ -111,6 +111,31 @@ impl Modules {
         self.refresh();
     }
 
+    /// What this machine announces to its peers: each module it has and, when known, its
+    /// version (a file is known only when it is the current release's).
+    pub fn announce(&self) -> Vec<meshproto::service::ModuleInfo> {
+        let mut out = vec![meshproto::service::ModuleInfo { name: "network".into(), version: env!("CARGO_PKG_VERSION").into() }];
+        let rv = self.release_version();
+        for (group, files) in GROUPS {
+            let present = if group == "agent" { self.agent_present } else { files.iter().any(|f| self.system_dir.join(exe_name(f)).is_file()) };
+            if !present {
+                continue;
+            }
+            // Every file of the group that is here is the current release's.
+            let current = group != "agent"
+                && files
+                    .iter()
+                    .filter(|f| self.system_dir.join(exe_name(f)).is_file())
+                    .all(|f| self.entries.get(*f).is_some_and(|e| e.state == State::Current));
+            let version = match (current, rv) {
+                (true, Some(v)) => format!("0.{v}.0"),
+                _ => String::new(),
+            };
+            out.push(meshproto::service::ModuleInfo { name: group.into(), version });
+        }
+        out
+    }
+
     /// Modules this machine has, by the files in meshd's directory and a registered
     /// agent-inbox service.
     fn wanted(&self) -> Vec<&'static str> {
@@ -364,11 +389,14 @@ mod tests {
         assert_eq!(m.install("desktop").unwrap().len(), 1);
         assert_eq!(std::fs::read(sys.join(exe_name("meshtray"))).unwrap(), b"new tray");
         assert_eq!(m.entries["meshtray"].state, State::Current);
+        let ann: Vec<(String, String)> = m.announce().into_iter().map(|x| (x.name, x.version)).collect();
+        assert_eq!(ann, [("network".to_string(), env!("CARGO_PKG_VERSION").to_string()), ("desktop".into(), "0.12.0".into())]);
 
         // An agent registration makes its file wanted.
         m.agent_present = true;
         m.refresh();
         assert_eq!(m.next_download().unwrap().0, "agent-inbox");
+        assert!(m.announce().iter().any(|x| x.name == "agent" && x.version.is_empty()), "present, version not known to meshd");
         std::fs::remove_dir_all(&sys).ok();
         std::fs::remove_dir_all(&cache).ok();
     }

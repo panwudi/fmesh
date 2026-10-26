@@ -25,7 +25,7 @@ use boringtun::noise::rate_limiter::RateLimiter;
 use boringtun::noise::{Packet, Tunn, TunnResult};
 use meshproto::crypto::PairKey;
 use meshproto::roster::Roster;
-use meshproto::service::{self, Service};
+use meshproto::service::{self, ModuleInfo, Service};
 use meshproto::{wire, x25519};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -217,6 +217,11 @@ struct PeerState {
     /// (so a withdrawal is owed when ours becomes empty).
     services_sent: Option<Instant>,
     services_sent_some: bool,
+    /// The peer's announced modules (since v13), like its services.
+    modules: Vec<ModuleInfo>,
+    modules_until: Option<Instant>,
+    modules_ts: u64,
+    modules_sent: Option<Instant>,
 }
 
 /// A socket connected to one peer address.
@@ -295,6 +300,8 @@ struct Rx<'a> {
     services_dir: Option<PathBuf>,
     local_services: Vec<crate::services::Local>,
     services_ts: u64,
+    local_modules: Vec<ModuleInfo>,
+    modules_ts: u64,
     /// When a local "check for updates" request last made us ask the relays.
     last_check: Option<Instant>,
     out: Vec<u8>,
@@ -358,6 +365,10 @@ pub fn run(cfg: Config) -> io::Result<()> {
                 services_ts: 0,
                 services_sent: None,
                 services_sent_some: false,
+                modules: vec![],
+                modules_until: None,
+                modules_ts: 0,
+                modules_sent: None,
             }),
         });
     }
@@ -454,6 +465,8 @@ pub fn run(cfg: Config) -> io::Result<()> {
         updater,
         services_dir,
         last_check: None,
+        local_modules: vec![],
+        modules_ts: 0,
         local_services: vec![],
         services_ts: 0,
         out: vec![0u8; BUF],
@@ -1318,6 +1331,16 @@ impl<'a> Rx<'a> {
             }
             return;
         }
+        if kind == wire::MODULES {
+            if let Some((ts, ttl, list)) = service::decode_modules(body) {
+                if accept_services(st.modules_ts, ts, meshproto::now_nanos()) {
+                    st.modules_ts = ts;
+                    st.modules = list;
+                    st.modules_until = Some(Instant::now() + services_ttl(ttl));
+                }
+            }
+            return;
+        }
         if self.cfg.force_relay && kind != wire::CALL {
             self.refresh_path(&mut st);
             return;
@@ -1491,6 +1514,10 @@ impl<'a> Rx<'a> {
         }
         let changed = scanned.iter().map(|l| &l.svc).ne(self.local_services.iter().map(|l| &l.svc));
         self.local_services = scanned;
+        let modules = self.updater.modules.announce();
+        let modules_changed = modules != self.local_modules;
+        self.local_modules = modules;
+        let mut modules_body = None;
         let list: Vec<Service> = self.local_services.iter().map(|l| l.svc.clone()).collect();
         let mut body = None;
         let sh = self.sh;
@@ -1501,11 +1528,27 @@ impl<'a> Rx<'a> {
                 st.services.clear();
                 st.services_until = None;
             }
+            if !online || st.modules_until.is_some_and(|t| now >= t) {
+                st.modules.clear();
+                st.modules_until = None;
+            }
             if !online {
                 st.services_sent = None; // announce again as soon as it is back
+                st.modules_sent = None;
                 continue;
             }
             let path = st.path;
+            if path != Path::None && (modules_changed || st.modules_sent.is_none_or(|t| now.duration_since(t) >= ANNOUNCE_EVERY)) {
+                if modules_body.is_none() {
+                    let ts = meshproto::now_nanos().max(self.modules_ts + 1);
+                    self.modules_ts = ts;
+                    let mut b = vec![wire::MODULES];
+                    b.extend(service::encode_modules(ts, ANNOUNCE_TTL, &self.local_modules).expect("module names are fixed"));
+                    modules_body = Some(b);
+                }
+                self.send_disco(pi, path, modules_body.as_deref().expect("built above"));
+                st.modules_sent = Some(now);
+            }
             if path == Path::None || !announce_due(&list, changed, st.services_sent_some, st.services_sent, now) {
                 continue;
             }
@@ -1557,8 +1600,16 @@ impl<'a> Rx<'a> {
                 me.name, me.ip, me.id, svc.name, svc.port
             );
         }
+        let modules_line = |name: &str, ip: &Ipv4Addr, id: u16, list: &[ModuleInfo]| {
+            let words: Vec<String> = list.iter().map(|m| format!("{}={}", m.name, if m.version.is_empty() { "?" } else { &m.version })).collect();
+            format!("modules {name} {ip} id {id} {}", words.join(" "))
+        };
+        let _ = writeln!(svc_lines, "{}", modules_line(&self.me.name, &self.me.ip, self.me.id, &self.local_modules));
         for peer in &self.sh.peers {
             let st = peer.st.lock().unwrap();
+            if st.modules_until.is_some() && !st.modules.is_empty() {
+                let _ = writeln!(svc_lines, "{}", modules_line(&peer.name, &peer.ip, peer.id, &st.modules));
+            }
             if let Some(until) = st.services_until {
                 for svc in &st.services {
                     let expires = until.saturating_duration_since(now).as_secs();

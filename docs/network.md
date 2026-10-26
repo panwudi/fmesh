@@ -196,6 +196,7 @@ module <name> current|ready|waiting|downloading|failed release <N> [progress <a>
 relay <name> <ip:port> up|down rtt <N>ms|- sees-us <ip:port>|-
 peer <name> <mesh IP> <path> handshake <N>s|never tx <N> rx <N> id <N> key <pubkey>
 service <node> <mesh IP> id <N> name <service> port <N> ident <x>|- expires <N>s [uid <N>|-]
+modules <node> <mesh IP> id <N> <module>=<x.y.z>|? ...
 ```
 
 - `<path>` is `direct <ip:port>`, `direct <ip:port> (unconnected)`, `relay <name>` or `none`.
@@ -204,6 +205,9 @@ service <node> <mesh IP> id <N> name <service> port <N> ident <x>|- expires <N>s
   manifest), `downloading`, `paused`, `trial` (a new release proving it reaches a relay). `bad` is a
   rolled back release; `error` (free text, always last) is the last failure. Product version `0.N.0`
   and release `N` are the same build. `auto` lists module groups installed without asking.
+- `modules` (since v13): the modules a node has (`network`, `desktop`, `cli`, `agent`), this node and
+  online peers that announce them; `?` is a module the node has without a known version. A node
+  without a line is "not announced", not "nothing installed".
 - `module` (since v12): one line per module file of the current release that this machine has
   (`meshtray`, `fmesh-desktop`, `fmesh` next to meshd; `agent-inbox` when an agent-inbox service is
   registered). `ready` means verified against the signed manifest and cached at `path` (world
@@ -240,6 +244,8 @@ status file. **An announcement is a discovery candidate, never authorization.**
   `meshd` to do something it does anyway, sooner. `check` sends HELLO to every relay now (at most every
   5 s), so "check for updates" gets a fresh announcement within a second or two. `meshd` reads and
   deletes request files every 2 s; they are never services and never sent to peers.
+- Modules (since v13): DISCO kind 5 announces the sender's modules and versions with the same framing,
+  timestamps and TTL as services (`meshproto::service::encode_modules`). Display data only.
 - Propagation: DISCO kind 4 over the existing node to node control encryption, sender identified by the
   authenticated header. Own services only; resent every 30 s and within 2 s of a peer coming online.
 - Receiver: timestamp must be newer than the last one from that peer and within 120 s of local time;

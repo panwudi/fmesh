@@ -1,6 +1,6 @@
 [package]
 name = "agent-inbox"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license.workspace = true
 description = "Deliver coordination messages to running agent sessions"

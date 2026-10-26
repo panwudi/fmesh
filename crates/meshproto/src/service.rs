@@ -92,6 +92,69 @@ pub fn decode(b: &[u8]) -> Option<(u64, u16, Vec<Service>)> {
     (i == b.len()).then_some((ts, ttl, list))
 }
 
+/// Module announcements (DISCO kind `wire::MODULES`, since v13): which fMesh modules the sender
+/// has and their versions, so other machines can show them. Same framing and replay rules as
+/// services; display data only, never authorization.
+///
+/// ```text
+/// ts u64, ttl u16, n u8 (at most MAX_MODULES)
+/// n x [name_len u8][name][version_len u8][version]   version: `x.y.z`, or empty when unknown
+/// ```
+pub const MAX_MODULES: usize = 8;
+const MAX_VERSION: usize = 16;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub version: String,
+}
+
+fn valid_module(m: &ModuleInfo) -> bool {
+    valid_name(&m.name) && m.version.len() <= MAX_VERSION && m.version.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+}
+
+pub fn encode_modules(ts: u64, ttl_secs: u16, list: &[ModuleInfo]) -> Option<Vec<u8>> {
+    if list.len() > MAX_MODULES || !list.iter().all(valid_module) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(11 + list.len() * (2 + MAX_NAME + MAX_VERSION));
+    out.extend_from_slice(&ts.to_be_bytes());
+    out.extend_from_slice(&ttl_secs.to_be_bytes());
+    out.push(list.len() as u8);
+    for m in list {
+        out.push(m.name.len() as u8);
+        out.extend_from_slice(m.name.as_bytes());
+        out.push(m.version.len() as u8);
+        out.extend_from_slice(m.version.as_bytes());
+    }
+    Some(out)
+}
+
+pub fn decode_modules(b: &[u8]) -> Option<(u64, u16, Vec<ModuleInfo>)> {
+    let ts = crate::wire::get_u64(b)?;
+    let ttl = u16::from_be_bytes(b.get(8..10)?.try_into().ok()?);
+    let n = *b.get(10)? as usize;
+    if n > MAX_MODULES {
+        return None;
+    }
+    let mut i = 11;
+    let mut list: Vec<ModuleInfo> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let nl = *b.get(i)? as usize;
+        let name = std::str::from_utf8(b.get(i + 1..i + 1 + nl)?).ok()?.to_string();
+        i += 1 + nl;
+        let vl = *b.get(i)? as usize;
+        let version = std::str::from_utf8(b.get(i + 1..i + 1 + vl)?).ok()?.to_string();
+        i += 1 + vl;
+        let m = ModuleInfo { name, version };
+        if !valid_module(&m) || list.iter().any(|x| x.name == m.name) {
+            return None;
+        }
+        list.push(m);
+    }
+    (i == b.len()).then_some((ts, ttl, list))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +189,24 @@ mod tests {
         assert!(encode(1, 1, &vec![svc("x", 1, ""); MAX_SERVICES + 1]).is_none());
         assert!(!valid_ident(&"z".repeat(MAX_IDENT + 1)));
         assert!(!valid_ident("-"));
+    }
+
+    #[test]
+    fn modules_round_trip_and_reject_bad_input() {
+        let m = |n: &str, v: &str| ModuleInfo { name: n.into(), version: v.into() };
+        let list = vec![m("network", "0.13.0"), m("desktop", ""), m("agent", "")];
+        let b = encode_modules(3, 120, &list).unwrap();
+        assert_eq!(decode_modules(&b), Some((3, 120, list)));
+        for cut in 0..b.len() {
+            assert!(decode_modules(&b[..cut]).is_none(), "truncated at {cut}");
+        }
+        assert!(encode_modules(1, 1, &[m("network", "1.0-beta")]).is_none());
+        assert!(encode_modules(1, 1, &[m("Net", "1.0.0")]).is_none());
+        assert!(encode_modules(1, 1, &vec![m("a", ""); MAX_MODULES + 1]).is_none());
+        let dup = encode_modules(1, 1, &[m("a", "1"), m("b", "1")]).unwrap();
+        let mut dup2 = dup.clone();
+        dup2[16] = b'a'; // second name: b -> a
+        assert!(decode_modules(&dup2).is_none());
     }
 
     #[test]
