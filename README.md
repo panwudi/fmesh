@@ -39,9 +39,11 @@ the tray's device list on a desktop.
 | `fmesh` CLI | yes | yes | yes |
 
 Verified end to end so far: `fmesh install agent` (an automated test installs into an empty HOME and
-delivers a message between two sessions), the device list and CLI on macOS and Windows, and the network modules in production. The
-service setup of `install network` / `install desktop`, the Linux user service and `install.ps1`
-have only had dry runs; report what you find.
+delivers a message between two sessions), the device list and CLI on macOS and Windows, the network
+modules in production, and upgrading the desktop module in place (`fmesh install desktop --upgrade`
+on macOS, `install.ps1 -Module desktop -Upgrade` on Windows). A first `install network` /
+`install desktop`, the Linux user service and a first `install.ps1` have only had dry runs; report
+what you find.
 
 ## Status
 

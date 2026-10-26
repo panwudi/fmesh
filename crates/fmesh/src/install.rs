@@ -371,6 +371,26 @@ fn set_mode(_: &Path, _: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Gives an installed file the owner of its directory. Copying as root on macOS keeps the
+/// source's owner (clonefile), which would leave a user-writable binary in a root-owned
+/// directory such as /opt/flytomesh.
+#[cfg(unix)]
+fn own_like_parent(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = |p: &Path| std::fs::metadata(p).map_err(|e| format!("stat {}: {e}", p.display()));
+    let dir = meta(path.parent().unwrap_or(Path::new(".")))?;
+    let file = meta(path)?;
+    if (file.uid(), file.gid()) != (dir.uid(), dir.gid()) {
+        std::os::unix::fs::chown(path, Some(dir.uid()), Some(dir.gid()))
+            .map_err(|e| format!("chown {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn own_like_parent(_: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 fn execute(s: &Step) -> Result<(), String> {
     match s {
         Step::Mkdir { path, mode } => {
@@ -382,6 +402,10 @@ fn execute(s: &Step) -> Result<(), String> {
         Step::Install { from, to } => {
             let tmp = to.with_extension("fmesh-new");
             std::fs::copy(from, &tmp).map_err(|e| format!("copy {} -> {}: {e}", from.display(), tmp.display()))?;
+            if let Err(e) = own_like_parent(&tmp) {
+                std::fs::remove_file(&tmp).ok();
+                return Err(e);
+            }
             std::fs::rename(&tmp, to).map_err(|e| format!("rename {}: {e}", to.display()))?;
             println!("installed {}", to.display());
         }
@@ -554,5 +578,11 @@ mod tests {
         execute(&Step::Install { from: d.join("meshd"), to: to.clone() }).unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"bin");
         assert!(!to.with_extension("fmesh-new").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (f, dir) = (std::fs::metadata(&to).unwrap(), std::fs::metadata(&d).unwrap());
+            assert_eq!((f.uid(), f.gid()), (dir.uid(), dir.gid()));
+        }
     }
 }
