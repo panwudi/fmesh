@@ -120,10 +120,10 @@ impl Device {
         }
     }
 
-    /// "组网 v0.13.0 · 桌面 v0.13.0 · Agent", or "模块未公告" when the node does not say.
+    /// "组网 v0.13.0 · 桌面 v0.13.0 · Agent", or "未公告" when the node does not say.
     pub fn modules_text(&self) -> String {
         let Some(list) = &self.modules else {
-            return if self.online() || self.me { "模块未公告 (0.13 之前的版本不公告)".into() } else { "模块未知 (设备离线)".into() };
+            return if self.online() || self.me { "未公告 (0.13 之前的版本不公告)".into() } else { "未知 (设备离线)".into() };
         };
         list.iter()
             .map(|m| {
