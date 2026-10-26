@@ -293,7 +293,13 @@ fn desktop(probe: &dyn Probe) -> Module {
         ok: installed,
         state,
         policy: "手动更新",
-        update: if installed { "在发布包里运行 sudo fmesh install desktop --upgrade; 一键更新在下一版".into() } else { String::new() },
+        update: if !installed {
+            String::new()
+        } else if cfg!(windows) {
+            "在发布包里以管理员身份运行 install.ps1 -Module desktop -Upgrade; 一键更新在下一版".into()
+        } else {
+            "在发布包里运行 sudo fmesh install desktop --upgrade; 一键更新在下一版".into()
+        },
         install_hint: (!installed).then(|| {
             if cfg!(target_os = "linux") {
                 "Linux 没有桌面模块, 用 fmesh 命令行".to_string()

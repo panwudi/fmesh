@@ -76,7 +76,11 @@ fn modules_cmd(args: &[String]) -> Result<(), String> {
         return print_json(&list);
     }
     for m in &list {
-        println!("{}  {}  {}", m.name, m.version_text, m.state);
+        if m.installed {
+            println!("{}  {}  {}", m.name, m.version_text, m.state);
+        } else {
+            println!("{}  未安装", m.name);
+        }
         if m.installed {
             println!("    更新: {}{}", m.policy, if m.update.is_empty() { String::new() } else { format!(" · {}", m.update) });
         }
