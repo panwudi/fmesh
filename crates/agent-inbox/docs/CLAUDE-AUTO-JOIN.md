@@ -48,6 +48,12 @@ dynamic session name nor the handshake's `serverInfo.name`. The wrapper passes
 `--dangerously-load-development-channels server:agent-inbox-join`, preserves
 arguments and working directory, and keeps positional prompts outside the
 variadic channel option. Explicit additional development channels are preserved.
+Channels require claude.ai sign-in, so the wrapper adds the flag only when the
+current auth method is claude.ai; for an OAuth token, an API key or a custom
+`ANTHROPIC_BASE_URL` gateway or local model it omits the flag, since Claude
+would otherwise ignore it and print "Channels are not currently available".
+Those sessions still receive over the native inbox below. `AGENT_INBOX_CHANNELS=on`
+or `off` overrides this detection, and an explicit flag always wins.
 The [Claude channel reference](https://code.claude.com/docs/en/channels-reference#test-it)
 documents the `server:<MCP-entry-name>` form.
 
