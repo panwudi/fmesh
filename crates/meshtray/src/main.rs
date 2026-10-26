@@ -266,10 +266,16 @@ impl Ui {
     }
 }
 
-/// Size and modification time of the running executable, to notice an upgrade.
-fn exe_stamp() -> Option<(u64, std::time::SystemTime)> {
+/// Identity of the file at the executable's path, to notice an upgrade. Installers copy the
+/// new binary (keeping its modification time) and rename it into place, so the inode (Unix)
+/// or creation time (Windows) is what changes.
+fn exe_stamp() -> Option<(u64, u64, Option<std::time::SystemTime>)> {
     let m = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
-    Some((m.len(), m.modified().ok()?))
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&m);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some((m.len(), ino, m.created().ok()))
 }
 
 /// The executable was replaced (an upgrade): start the new one. Under launchd a non-zero exit
