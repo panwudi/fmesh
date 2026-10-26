@@ -1472,6 +1472,15 @@ impl<'a> Rx<'a> {
             None => vec![],
         };
         let requests = self.services_dir.as_deref().map(crate::services::take_requests).unwrap_or_default();
+        self.updater.modules.agent_present = scanned.iter().any(|l| l.svc.name == "agent-inbox");
+        // One-click update of the desktop or CLI module: install the verified cached files.
+        for r in &requests {
+            if let Some(group) = r.strip_prefix("install-") {
+                if group != "agent" {
+                    self.updater.install_group(group);
+                }
+            }
+        }
         // "Check for updates": ask every relay now instead of at the next HELLO. Rate limited,
         // since any local user can ask.
         if requests.iter().any(|r| r == "check") && self.last_check.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_GAP) {
@@ -1527,6 +1536,9 @@ impl<'a> Rx<'a> {
             meshproto::b64(&self.me.key)
         );
         let _ = writeln!(s, "{}", self.updater.status_line());
+        for line in self.updater.module_lines() {
+            let _ = writeln!(s, "{line}");
+        }
         for r in &self.relays {
             let state = if r.alive(now) { "up" } else { "down" };
             let rtt = r.rtt.map(|d| format!("{}ms", d.as_millis())).unwrap_or("-".into());

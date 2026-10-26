@@ -1,7 +1,8 @@
 #!/bin/sh
-# Build meshd for every platform, sign a release manifest and publish it on every relay listed
-# in ~/.config/flytomesh/relays. Nodes see the new version in their next HELLO_ACK (within
-# 25 seconds), download their platform's binary, verify it and restart into it.
+# Build meshd and the other modules for every platform, sign a release manifest and publish it
+# on every relay listed in ~/.config/flytomesh/relays. Nodes see the new version in their next
+# HELLO_ACK (within 25 seconds), download their platform's meshd, verify it and restart into it,
+# then fetch the module files this machine has (docs/network.md, "Module updates").
 # The release number lives in ~/.config/flytomesh/release.version and goes up by one per run.
 set -e
 cd "$(dirname "$0")/../.."
@@ -20,6 +21,12 @@ cargo build --profile mesh -p meshd >/dev/null 2>&1
 cargo zigbuild --profile mesh -p meshd --target x86_64-unknown-linux-musl >/dev/null 2>&1
 cargo zigbuild --profile mesh -p meshd --target aarch64-unknown-linux-musl >/dev/null 2>&1
 cargo zigbuild --profile mesh -p meshd --target x86_64-pc-windows-gnu >/dev/null 2>&1
+# Module files: release profile (agent-inbox keeps unwinding), agent-inbox for an older glibc.
+F="--features agent-inbox/dynamic-peers"
+cargo build --release -p fmesh -p meshtray -p fmesh-desktop -p agent-inbox $F >/dev/null 2>&1
+cargo zigbuild --release -p fmesh -p agent-inbox $F --target x86_64-unknown-linux-gnu.2.34 >/dev/null 2>&1
+cargo zigbuild --release -p fmesh -p agent-inbox $F --target aarch64-unknown-linux-gnu.2.34 >/dev/null 2>&1
+cargo zigbuild --release -p fmesh -p meshtray -p fmesh-desktop --target x86_64-pc-windows-gnu >/dev/null 2>&1
 
 BODY="$OUT/body"
 printf 'flytomesh-release 1\nversion %s\n' "$V" > "$BODY"
@@ -32,6 +39,17 @@ add macos-aarch64 target/mesh/meshd
 add linux-x86_64 target/x86_64-unknown-linux-musl/mesh/meshd
 add linux-aarch64 target/aarch64-unknown-linux-musl/mesh/meshd
 add windows-x86_64 target/x86_64-pc-windows-gnu/mesh/meshd.exe
+# Signed `#fmesh module` lines: parsers before v10 skip them.
+module() { # name platform path
+    h=$(shasum -a 256 "$3" | awk '{print $1}')
+    cp "$3" "$OUT/$h"
+    printf '#fmesh module %s %s %s %s\n' "$1" "$2" "$h" "$(wc -c < "$3" | tr -d ' ')" >> "$BODY"
+}
+for m in fmesh meshtray fmesh-desktop agent-inbox; do module $m macos-aarch64 target/release/$m; done
+for a in x86_64 aarch64; do
+    for m in fmesh agent-inbox; do module $m linux-$a target/$a-unknown-linux-gnu/release/$m; done
+done
+for m in fmesh meshtray fmesh-desktop; do module $m windows-x86_64 target/x86_64-pc-windows-gnu/release/$m.exe; done
 target/mesh/meshd release-sign --admin-key "$A/admin.key" < "$BODY" > "$OUT/manifest"
 rm "$BODY"
 

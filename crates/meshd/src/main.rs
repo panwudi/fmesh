@@ -7,6 +7,7 @@
 
 mod batch;
 mod dns;
+mod modules;
 mod netif;
 mod node;
 mod services;

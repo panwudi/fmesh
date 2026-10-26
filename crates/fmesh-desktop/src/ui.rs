@@ -17,6 +17,8 @@ struct State {
     modules: Vec<Module>,
     /// Check for updates once the first load is done (opened by the tray's "检查更新").
     check_after_load: bool,
+    /// Modules whose update is being installed.
+    busy: BTreeSet<&'static str>,
     query: String,
     filter: usize,
     /// Devices the user opened, by name, kept across searches and refreshes.
@@ -78,10 +80,12 @@ fn module_item(i: usize, m: &Module) -> ModuleItem {
         state: m.state.as_str().into(),
         ok: m.ok,
         installed: m.installed,
-        policy: m.policy.into(),
+        policy: m.policy.as_str().into(),
         update: m.update.as_str().into(),
         hint: m.install_hint.clone().unwrap_or_default().into(),
         path: m.path.clone().unwrap_or_default().into(),
+        action: m.action.as_ref().map(|a| a.label.clone()).unwrap_or_default().into(),
+        busy: STATE.with(|s| s.try_borrow().map(|s| s.busy.contains(m.id)).unwrap_or(false)),
     }
 }
 
@@ -296,6 +300,40 @@ pub fn run(start: crate::Start) -> Result<(), slint::PlatformError> {
         }
     });
 
+    let weak = app.as_weak();
+    app.on_act(move |i| {
+        let Some(app) = weak.upgrade() else { return };
+        let picked = STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            let m = s.modules.get(i as usize).cloned()?;
+            let action = m.action.clone()?;
+            if !s.busy.insert(m.id) {
+                return None; // already running
+            }
+            Some((m, action))
+        });
+        let Some((m, action)) = picked else { return };
+        render(&app);
+        say_for(&app, format!("{}: {}...", m.name, action.label), Duration::from_secs(30));
+        let weak = app.as_weak();
+        std::thread::spawn(move || {
+            let result = modules::run_action(&action, m.path.as_deref().map(std::path::Path::new));
+            let (_, mods) = crate::load();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(app) = weak.upgrade() else { return };
+                STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.busy.remove(m.id);
+                    s.modules = mods;
+                });
+                render(&app);
+                match result {
+                    Ok(text) => say_for(&app, format!("{}: {text}", m.name), Duration::from_secs(30)),
+                    Err(e) => say_for(&app, format!("{}: 更新失败: {e}", m.name), Duration::from_secs(30)),
+                }
+            });
+        });
+    });
     STATE.with(|s| s.borrow_mut().check_after_load = start.check);
     reload(&app);
     app.run()

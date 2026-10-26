@@ -6,7 +6,7 @@
 //! version mark compiled into them (`VERSION_MARK`). Builds before 0.11 carry no mark and
 //! report no update state; they show as "unknown", never as a guessed version.
 
-use crate::status::{Status, Update};
+use crate::status::{ModuleFile, Status, Update};
 use crate::view::{Agents, Device};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -43,9 +43,11 @@ pub struct Module {
     pub state: String,
     pub ok: bool,
     /// How this module is updated.
-    pub policy: &'static str,
+    pub policy: String,
     /// Update state in words.
     pub update: String,
+    /// What the user can do now (e.g. install a downloaded update).
+    pub action: Option<Action>,
     /// What to run to install it, when it is not installed.
     pub install_hint: Option<String>,
 }
@@ -141,7 +143,7 @@ fn valid_version(v: &str) -> bool {
 
 /// Every module, in a fixed order. `me` is this machine's entry in the device view.
 pub fn local(s: &Status, me: Option<&Device>, probe: &dyn Probe) -> Vec<Module> {
-    let mut list = vec![network(s, probe), agent(me, probe), desktop(probe), cli(probe)];
+    let mut list = vec![network(s, probe), agent(s, me, probe), desktop(s, probe), cli(s, probe)];
     for m in &mut list {
         if m.version_text.is_empty() {
             m.version_text = match (&m.version, m.installed) {
@@ -191,8 +193,9 @@ fn network(s: &Status, probe: &dyn Probe) -> Module {
         version,
         ok: s.running,
         state,
-        policy: "自动更新 (管理员统一发版)",
+        policy: "自动更新 (管理员统一发版)".into(),
         update,
+        action: None,
         install_hint: (!installed).then(|| {
             if cfg!(windows) { "以管理员身份运行 install.ps1 -Module network -Name <名字>" } else { "sudo fmesh install network --name <名字>" }.into()
         }),
@@ -238,7 +241,51 @@ pub fn network_update(u: &Update) -> String {
     text
 }
 
-fn agent(me: Option<&Device>, probe: &dyn Probe) -> Module {
+/// The update state of a group of module files (desktop: tray + list; CLI; agent) from meshd's
+/// `module` lines, and what the user can do about it.
+fn group_update(s: &Status, group: &str, files: &[&str], same_as_installed: impl Fn(&ModuleFile) -> bool) -> (String, Option<Action>) {
+    let Some(u) = s.update.as_ref().filter(|_| s.running) else {
+        return ("组网服务没有运行或版本较旧 (0.12 之前), 不能自动下载; 请手动更新".into(), None);
+    };
+    let lines: Vec<&ModuleFile> = s.module_files.iter().filter(|m| files.contains(&m.name.as_str())).collect();
+    let Some(first) = lines.first() else {
+        return (format!("当前发布 (v{}) 还没有这个模块的文件, 或组网服务还没取到发布清单", u.release), None);
+    };
+    let v = format!("v0.{}.0", first.release);
+    if let Some(m) = lines.iter().find(|m| m.state == "failed") {
+        return (format!("{v} 更新失败: {}", m.error.clone().unwrap_or_default()), None);
+    }
+    if let Some(m) = lines.iter().find(|m| m.state == "downloading") {
+        let p = m.progress.map(|(a, b)| format!(": {a}/{b}")).unwrap_or_default();
+        return (format!("正在下载 {v}{p}"), None);
+    }
+    if lines.iter().any(|m| m.state == "waiting") {
+        return (format!("{v} 等待下载 (组网服务先更新自己, 再逐个取模块文件)"), None);
+    }
+    let pending: Vec<&&ModuleFile> = lines.iter().filter(|m| m.state == "ready" && !same_as_installed(m)).collect();
+    if pending.is_empty() {
+        return (format!("已是最新 {v} (发布 v{})", first.release), None);
+    }
+    if u.auto.iter().any(|g| g == group) {
+        return (format!("{v} 已下载并校验, 正在自动安装"), None);
+    }
+    let action = if group == "agent" {
+        Action { label: format!("更新到 {v}"), kind: ActionKind::InstallAgent { from: pending[0].path.clone() } }
+    } else {
+        Action { label: format!("更新到 {v}"), kind: ActionKind::Request { word: format!("install-{group}"), files: files.iter().map(|f| f.to_string()).collect() } }
+    };
+    (format!("{v} 已下载并校验, 可以更新"), Some(action))
+}
+
+/// Whether two files have the same bytes (the user's agent-inbox and the cached release file).
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) if x.len() == y.len() => std::fs::read(a).ok() == std::fs::read(b).ok(),
+        _ => false,
+    }
+}
+
+fn agent(s: &Status, me: Option<&Device>, probe: &dyn Probe) -> Module {
     let path = probe.find("agent-inbox");
     let installed = path.is_some();
     let version = path.as_deref().and_then(|p| probe.version("agent-inbox", p));
@@ -251,6 +298,11 @@ fn agent(me: Option<&Device>, probe: &dyn Probe) -> Module {
         (true, Some(Agents::Unavailable { reason })) => (format!("本机 Agent 目录不可用: {reason}"), false),
         (true, _) => ("已安装 · 运行状态未知".to_string(), false),
     };
+    let (update, action) = match &path {
+        None => (String::new(), None),
+        Some(_) if !s.running && s.update.is_none() => ("没有装组网模块, 暂无更新来源; 请用发布包里的 fmesh install agent --upgrade".into(), None),
+        Some(p) => group_update(s, "agent", &["agent-inbox"], |m| same_file(p, Path::new(&m.path))),
+    };
     Module {
         id: "agent",
         name: "Agent",
@@ -260,13 +312,22 @@ fn agent(me: Option<&Device>, probe: &dyn Probe) -> Module {
         version,
         state,
         ok,
-        policy: "手动更新",
-        update: "在发布包里运行 fmesh install agent --upgrade; 一键更新在下一版".into(),
+        policy: "一键更新 (由本人确认, 会重启本机 Agent 后台服务)".into(),
+        update,
+        action,
         install_hint: (!installed).then(|| if cfg!(windows) { "Windows 暂不支持 Agent 模块".into() } else { "fmesh install agent (不需要 root)".into() }),
     }
 }
 
-fn desktop(probe: &dyn Probe) -> Module {
+fn auto_policy(s: &Status, group: &str) -> String {
+    if s.update.as_ref().is_some_and(|u| u.auto.iter().any(|g| g == group)) {
+        "自动更新 (组网服务下载并安装)".into()
+    } else {
+        "一键更新 (组网服务自动下载, 点击安装)".into()
+    }
+}
+
+fn desktop(s: &Status, probe: &dyn Probe) -> Module {
     let tray = probe.find("meshtray");
     let list = probe.find("fmesh-desktop");
     let installed = tray.is_some() || list.is_some();
@@ -283,6 +344,7 @@ fn desktop(probe: &dyn Probe) -> Module {
         (None, Some(_)) => "已安装设备列表, 没有托盘".to_string(),
         (None, None) => "未安装".to_string(),
     };
+    let (update, action) = if installed { group_update(s, "desktop", &["meshtray", "fmesh-desktop"], |m| m.state == "current") } else { (String::new(), None) };
     Module {
         id: "desktop",
         name: "桌面",
@@ -292,14 +354,9 @@ fn desktop(probe: &dyn Probe) -> Module {
         version,
         ok: installed,
         state,
-        policy: "手动更新",
-        update: if !installed {
-            String::new()
-        } else if cfg!(windows) {
-            "在发布包里以管理员身份运行 install.ps1 -Module desktop -Upgrade; 一键更新在下一版".into()
-        } else {
-            "在发布包里运行 sudo fmesh install desktop --upgrade; 一键更新在下一版".into()
-        },
+        policy: auto_policy(s, "desktop"),
+        update,
+        action,
         install_hint: (!installed).then(|| {
             if cfg!(target_os = "linux") {
                 "Linux 没有桌面模块, 用 fmesh 命令行".to_string()
@@ -312,9 +369,12 @@ fn desktop(probe: &dyn Probe) -> Module {
     }
 }
 
-fn cli(probe: &dyn Probe) -> Module {
+fn cli(s: &Status, probe: &dyn Probe) -> Module {
     let path = probe.find("fmesh");
     let version = path.as_deref().and_then(|p| probe.version("fmesh", p));
+    // Only the copy next to meshd is updated through the mesh.
+    let system = path.as_deref().is_some_and(|p| p.starts_with(SYSTEM_DIR));
+    let (update, action) = if system { group_update(s, "cli", &["fmesh"], |m| m.state == "current") } else { (String::new(), None) };
     Module {
         id: "cli",
         name: "命令行",
@@ -324,10 +384,149 @@ fn cli(probe: &dyn Probe) -> Module {
         state: if path.is_some() { "已安装".into() } else { "未安装".into() },
         ok: path.is_some(),
         path: path.map(|p| p.display().to_string()),
-        policy: "随组网或桌面模块安装",
-        update: String::new(),
+        policy: if system { auto_policy(s, "cli") } else { "随 Agent 模块安装".into() },
+        update,
+        action,
         install_hint: None,
     }
+}
+
+/// What a module card offers right now.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Action {
+    pub label: String,
+    #[serde(flatten)]
+    pub kind: ActionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActionKind {
+    /// Ask meshd to install these files of the current release (desktop, CLI).
+    Request { word: String, files: Vec<String> },
+    /// Copy the verified cached agent-inbox over the user's own and restart its services.
+    InstallAgent { from: String },
+}
+
+/// Carries out an action; the text says what happened, also on failure.
+pub fn run_action(a: &Action, target: Option<&Path>) -> Result<String, String> {
+    match &a.kind {
+        ActionKind::Request { word, files } => request_install(word, files),
+        ActionKind::InstallAgent { from } => install_agent(Path::new(from), target.ok_or("找不到本机的 agent-inbox")?),
+    }
+}
+
+fn write_request(word: &str) -> Result<PathBuf, String> {
+    let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let req = PathBuf::from(SERVICES_DIR).join(format!(".request-{}-{nonce}", std::process::id()));
+    std::fs::write(&req, format!("{word}\n")).map_err(|e| format!("写不进请求目录 {SERVICES_DIR}: {e}"))?;
+    Ok(req)
+}
+
+/// Asks meshd to install a group and waits until its files are current (or failed).
+fn request_install(word: &str, files: &[String]) -> Result<String, String> {
+    let req = write_request(word)?;
+    let start = Instant::now();
+    let result = loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let s = crate::status::read(Path::new(crate::status::STATUS_FILE)).0;
+        let mine: Vec<&ModuleFile> = s.module_files.iter().filter(|m| files.contains(&m.name)).collect();
+        if let Some(m) = mine.iter().find(|m| m.state == "failed") {
+            break Err(format!("安装失败: {}", m.error.clone().unwrap_or_default()));
+        }
+        if !mine.is_empty() && mine.iter().all(|m| m.state == "current") {
+            break Ok(format!("已安装 v0.{}.0", mine[0].release));
+        }
+        if start.elapsed() > Duration::from_secs(20) {
+            break Err("组网服务 20 秒内没有完成安装 (组网服务在运行吗?)".into());
+        }
+    };
+    std::fs::remove_file(&req).ok();
+    result
+}
+
+/// Replaces the user's agent-inbox with the verified cached file, keeping the old one as
+/// `<target>.prev`, then restarts the user's own background services that run it. Processes
+/// started by Claude or Codex sessions keep the old program until their session reconnects.
+pub fn install_agent(from: &Path, target: &Path) -> Result<String, String> {
+    let mut new = target.as_os_str().to_owned();
+    new.push(".fmesh-new");
+    let new = PathBuf::from(new);
+    std::fs::copy(from, &new).map_err(|e| format!("复制 {}: {e}", from.display()))?;
+    if !same_file(from, &new) {
+        std::fs::remove_file(&new).ok();
+        return Err("复制出的文件和发布文件不一致".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    let mut prev = target.as_os_str().to_owned();
+    prev.push(".prev");
+    std::fs::copy(target, PathBuf::from(prev)).map_err(|e| format!("备份旧程序: {e}"))?;
+    std::fs::rename(&new, target).map_err(|e| format!("替换 {}: {e}", target.display()))?;
+    let (restarted, manual) = restart_agent_services(target);
+    let mut text = String::from("已更新 agent-inbox");
+    if !restarted.is_empty() {
+        text += &format!(", 已重启 {} 个后台服务 ({})", restarted.len(), restarted.join(", "));
+    }
+    if !manual.is_empty() {
+        text += &format!("; 需要管理员重启: {}", manual.join(", "));
+    }
+    text += ". 正在运行的 Claude / Codex 会话重连 MCP 后用上新版";
+    Ok(text)
+}
+
+fn output(cmd: &str, args: &[&str]) -> Option<String> {
+    let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Restarts this user's always-on services that run `target`: launchd agents on macOS,
+/// `systemctl --user` units on Linux. System units running it are listed for an admin.
+fn restart_agent_services(target: &Path) -> (Vec<String>, Vec<String>) {
+    let t = target.to_string_lossy();
+    let (mut restarted, mut manual) = (vec![], vec![]);
+    if cfg!(target_os = "macos") {
+        let uid = output("id", &["-u"]).unwrap_or_default();
+        let Some(home) = std::env::var_os("HOME") else { return (restarted, manual) };
+        let dir = PathBuf::from(home).join("Library/LaunchAgents");
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let f = e.path().to_string_lossy().into_owned();
+            if !f.ends_with(".plist") || output("plutil", &["-extract", "ProgramArguments.0", "raw", "-o", "-", &f]).as_deref() != Some(t.as_ref()) {
+                continue;
+            }
+            // Only jobs kept running (relay, watchers); scheduled ones pick it up next run.
+            if output("plutil", &["-extract", "KeepAlive", "raw", "-o", "-", &f]).is_none_or(|k| k == "false") {
+                continue;
+            }
+            let Some(label) = output("plutil", &["-extract", "Label", "raw", "-o", "-", &f]) else { continue };
+            if output("launchctl", &["kickstart", "-k", &format!("gui/{uid}/{label}")]).is_some() {
+                restarted.push(label);
+            } else {
+                manual.push(label);
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        for (user, list) in [(true, output("systemctl", &["--user", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"])), (false, output("systemctl", &["list-units", "--type=service", "--state=running", "--no-legend", "--plain"]))] {
+            for unit in list.unwrap_or_default().lines().filter_map(|l| l.split_whitespace().next()) {
+                let mut args = vec!["show", "-p", "ExecStart", "--value", unit];
+                if user {
+                    args.insert(0, "--user");
+                }
+                if !output("systemctl", &args).is_some_and(|x| x.contains(t.as_ref())) {
+                    continue;
+                }
+                if user && output("systemctl", &["--user", "restart", unit]).is_some() {
+                    restarted.push(unit.to_string());
+                } else {
+                    manual.push(unit.to_string());
+                }
+            }
+        }
+    }
+    (restarted, manual)
 }
 
 /// The result of "check for updates" (`check_now`).
@@ -356,11 +555,10 @@ pub fn check_now(timeout: Duration) -> Check {
     if s.update.is_none() {
         return Check::Unsupported(Box::new(s));
     }
-    let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let req = PathBuf::from(SERVICES_DIR).join(format!(".request-{}-{nonce}", std::process::id()));
-    if let Err(e) = std::fs::write(&req, "check\n") {
-        return Check::Failed(format!("写不进请求目录 {SERVICES_DIR}: {e}"));
-    }
+    let req = match write_request("check") {
+        Ok(r) => r,
+        Err(e) => return Check::Failed(e),
+    };
     let start = Instant::now();
     let result = loop {
         std::thread::sleep(Duration::from_millis(400));
@@ -469,6 +667,43 @@ mod tests {
         assert_eq!(update_short(&s("update version 0.11.0 release 11 latest 12 via sh age 1 state downloading progress 1/9\n")), "正在更新到 v12: 1/9");
         assert_eq!(update_short(&s("node a 10.249.0.1 id 1 roster v1 release v10 (x) key K=\n")), "组网发布 v10 · 自动更新");
         assert_eq!(update_short(&crate::status::parse("", false)), "组网未运行, 无法检查更新");
+    }
+
+    #[test]
+    fn module_updates_offer_an_action_only_when_ready() {
+        let st = |extra: &str| status(&format!("node a 10.249.0.1 id 1 roster v3 release v12 (x) key K=\nupdate version 0.12.0 release 12 state idle\n{extra}"));
+        let files = ["meshtray", "fmesh-desktop"];
+        let (t, a) = group_update(&st("module meshtray ready release 12 sha256 ab path /c/ab\nmodule fmesh-desktop current release 12\n"), "desktop", &files, |m| m.state == "current");
+        assert_eq!(t, "v0.12.0 已下载并校验, 可以更新");
+        let a = a.unwrap();
+        assert_eq!(a.label, "更新到 v0.12.0");
+        assert_eq!(a.kind, ActionKind::Request { word: "install-desktop".into(), files: vec!["meshtray".into(), "fmesh-desktop".into()] });
+        let (t, a) = group_update(&st("module meshtray downloading release 12 progress 3/10\n"), "desktop", &files, |_| false);
+        assert_eq!((t.as_str(), a), ("正在下载 v0.12.0: 3/10", None));
+        let (t, _) = group_update(&st("module meshtray current release 12\nmodule fmesh-desktop current release 12\n"), "desktop", &files, |m| m.state == "current");
+        assert_eq!(t, "已是最新 v0.12.0 (发布 v12)");
+        let auto = status("node a 10.249.0.1 id 1 roster v3 release v12 (x) key K=\nupdate version 0.12.0 release 12 state idle auto desktop\nmodule meshtray ready release 12 sha256 ab path /c/ab\n");
+        assert_eq!(group_update(&auto, "desktop", &files, |_| false), ("v0.12.0 已下载并校验, 正在自动安装".into(), None));
+        // The agent file is compared with the user's own copy.
+        let (_, a) = group_update(&st("module agent-inbox ready release 12 sha256 ab path /c/ab\n"), "agent", &["agent-inbox"], |_| false);
+        assert_eq!(a.unwrap().kind, ActionKind::InstallAgent { from: "/c/ab".into() });
+        let (t, a) = group_update(&st("module agent-inbox ready release 12 sha256 ab path /c/ab\n"), "agent", &["agent-inbox"], |_| true);
+        assert_eq!((t.as_str(), a), ("已是最新 v0.12.0 (发布 v12)", None));
+        assert!(group_update(&st(""), "cli", &["fmesh"], |_| false).0.contains("还没有这个模块的文件"));
+    }
+
+    #[test]
+    fn agent_install_keeps_the_old_file() {
+        let d = std::env::temp_dir().join(format!("fmesh-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (from, target) = (d.join("cached"), d.join("agent-inbox"));
+        std::fs::write(&from, b"new").unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        let text = install_agent(&from, &target).unwrap();
+        assert!(text.starts_with("已更新 agent-inbox"), "{text}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(std::fs::read(d.join("agent-inbox.prev")).unwrap(), b"old");
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

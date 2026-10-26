@@ -17,6 +17,8 @@ fmesh devices [--json] [--online | --offline | --agent-service] [<search>]
 fmesh agents [--json] [<search>]
 fmesh modules [--json]                (modules on this machine: version, state, updates)
 fmesh update check [--json]           (ask the relays for the current release now)
+fmesh update desktop|cli|agent        (install a downloaded, verified module update)
+fmesh update auto desktop|cli on|off  (root: let meshd install that module's updates itself)
 fmesh agent <agent-inbox arguments>   (Agent Mesh: send, who, relay, ...)
 fmesh net <meshd arguments>           (Network Mesh: status, up, ...)
 fmesh desktop                         (native device and agent list)
@@ -84,6 +86,9 @@ fn modules_cmd(args: &[String]) -> Result<(), String> {
         if m.installed {
             println!("    更新: {}{}", m.policy, if m.update.is_empty() { String::new() } else { format!(" · {}", m.update) });
         }
+        if let Some(a) = &m.action {
+            println!("    可以: {} (fmesh update {})", a.label, m.id);
+        }
         if let Some(h) = &m.install_hint {
             println!("    安装: {h}");
         }
@@ -93,8 +98,11 @@ fn modules_cmd(args: &[String]) -> Result<(), String> {
 
 fn update_cmd(args: &[String]) -> Result<(), String> {
     let (sub, rest) = args.split_first().ok_or(format!("usage:\n{USAGE}"))?;
-    if sub != "check" {
-        return Err(format!("unknown update command {sub}\n{USAGE}"));
+    match sub.as_str() {
+        "check" => {}
+        "auto" => return auto_cmd(rest),
+        "desktop" | "cli" | "agent" => return install_update(sub),
+        _ => return Err(format!("unknown update command {sub}\n{USAGE}")),
     }
     let o = opts(rest, false)?;
     if !o.json {
@@ -162,6 +170,44 @@ fn status_cmd(args: &[String]) -> Result<(), String> {
     if v.labels_error {
         println!("注意: 设备归属配置 ({}) 读取失败", labels::path().display());
     }
+    Ok(())
+}
+
+/// Installs a downloaded module update (the same action as the window's button).
+fn install_update(id: &str) -> Result<(), String> {
+    let (v, s) = load_with_status();
+    let list = modules::local(&s, v.devices.first().filter(|d| d.me), &modules::Disk);
+    let m = list.iter().find(|m| m.id == id).ok_or("unknown module")?;
+    let Some(action) = &m.action else {
+        println!("{}: 没有可安装的更新. {}", m.name, m.update);
+        return Ok(());
+    };
+    println!("{}: {}...", m.name, action.label);
+    let text = modules::run_action(action, m.path.as_deref().map(std::path::Path::new))?;
+    println!("{text}");
+    Ok(())
+}
+
+/// `fmesh update auto <group> on|off`: the root-owned list of groups meshd installs itself.
+fn auto_cmd(args: &[String]) -> Result<(), String> {
+    let usage = || format!("usage: fmesh update auto desktop|cli on|off [--dir <meshd dir>]\n{USAGE}");
+    let (group, on) = match args {
+        [g, v, ..] if (g == "desktop" || g == "cli") && (v == "on" || v == "off") => (g.as_str(), v == "on"),
+        _ => return Err(usage()),
+    };
+    let dir = match args.get(2..) {
+        Some([flag, d]) if flag == "--dir" => PathBuf::from(d),
+        Some([]) | None => PathBuf::from(if cfg!(windows) { r"C:\ProgramData\flytoMesh" } else { "/etc/flytomesh" }),
+        _ => return Err(usage()),
+    };
+    let file = dir.join("auto-update");
+    let mut groups: Vec<String> = std::fs::read_to_string(&file).unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    groups.retain(|g| g != group);
+    if on {
+        groups.push(group.to_string());
+    }
+    std::fs::write(&file, groups.join("\n") + "\n").map_err(|e| format!("cannot write {} (needs root): {e}", file.display()))?;
+    println!("{group}: {} (meshd reads {} every 10 s)", if on { "自动更新已开启" } else { "自动更新已关闭, 改为一键更新" }, file.display());
     Ok(())
 }
 

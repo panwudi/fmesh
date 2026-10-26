@@ -31,6 +31,12 @@ Add `--dry-run` to see the plan first. Existing configuration is never overwritt
 Then `fmesh status`, `fmesh devices`, `fmesh agents` (add `--json` for scripts) on any machine, or
 the tray's device list on a desktop.
 
+`fmesh modules` (and the window's "本机模块" page) lists the modules on this machine with version,
+state and update state. The network module updates itself from signed releases; desktop, CLI and
+Agent Mesh updates are downloaded and verified automatically on machines with the network module and
+installed with one click (`fmesh update desktop|cli|agent`), or automatically with
+`sudo fmesh update auto desktop on`. `fmesh update check` asks the relays right away.
+
 | | macOS | Linux | Windows |
 |---|---|---|---|
 | Agent Mesh | yes | yes | not yet (local control uses Unix sockets) |

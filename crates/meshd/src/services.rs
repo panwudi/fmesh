@@ -113,10 +113,12 @@ pub fn scan(dir: &Path, now: SystemTime) -> Vec<Local> {
     out
 }
 
-/// Request files: `.request-<anything>` in the same directory, one word per line (`check`:
-/// ask the relays for the current release now). Any local user can write one; meshd reads and
-/// deletes them on its status timer. A request only makes meshd do sooner what it does anyway,
-/// so it needs no authorization. Read like registrations: plain small files, no links.
+/// Request files: `.request-<anything>` in the same directory, one word per line: `check` (ask
+/// the relays for the current release now), `install-desktop` / `install-cli` (install that
+/// module's files from the current signed release, already verified in the cache). Any local
+/// user can write one; meshd reads and deletes them on its status timer. A request only makes
+/// meshd do what the signed release already says, sooner, so it needs no authorization beyond
+/// being on this machine. Read like registrations: plain small files, no links.
 pub const REQUEST_PREFIX: &str = ".request-";
 const MAX_REQUESTS: usize = 16;
 

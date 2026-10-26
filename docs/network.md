@@ -191,7 +191,8 @@ writes, world readable), `C:\ProgramData\flytoMesh\status` (Windows). Rewritten 
 
 ```text
 node <name> <mesh IP> id <N> roster v<N> release v<N> (<platform>) [downloading <a>/<b>] key <pubkey>
-update version <x.y.z> release <N> [latest <N> via <relay> age <N>] state <state> [progress <a>/<b>] [bad <N>] [error <text>]
+update version <x.y.z> release <N> [latest <N> via <relay> age <N>] state <state> [progress <a>/<b>] [bad <N>] [auto <groups>] [error <text>]
+module <name> current|ready|waiting|downloading|failed release <N> [progress <a>/<b>] [sha256 <hex> path <file>] [error <text>]
 relay <name> <ip:port> up|down rtt <N>ms|- sees-us <ip:port>|-
 peer <name> <mesh IP> <path> handshake <N>s|never tx <N> rx <N> id <N> key <pubkey>
 service <node> <mesh IP> id <N> name <service> port <N> ident <x>|- expires <N>s [uid <N>|-]
@@ -202,7 +203,11 @@ service <node> <mesh IP> id <N> name <service> port <N> ident <x>|- expires <N>s
   announced (`age` seconds before the file was written), and `state`: `idle`, `checking` (fetching a
   manifest), `downloading`, `paused`, `trial` (a new release proving it reaches a relay). `bad` is a
   rolled back release; `error` (free text, always last) is the last failure. Product version `0.N.0`
-  and release `N` are the same build.
+  and release `N` are the same build. `auto` lists module groups installed without asking.
+- `module` (since v12): one line per module file of the current release that this machine has
+  (`meshtray`, `fmesh-desktop`, `fmesh` next to meshd; `agent-inbox` when an agent-inbox service is
+  registered). `ready` means verified against the signed manifest and cached at `path` (world
+  readable); `current` means the installed file is that release's. Section "Module updates" below.
 - Parse fields by keyword (`key`, `id`), not position.
 - A peer is online when `handshake` < 180 s. The path alone does not mean online.
 - Compatibility: only new line types and fields appended at the end. Readers ignore unknown lines
@@ -241,6 +246,31 @@ status file. **An announcement is a discovery candidate, never authorization.**
   kept at most 300 s; cleared when the peer goes offline.
 - Boundary: an announcement proves "someone on node X registered this", nothing about which process
   listens or whether `ident` is genuine. Root or any local user on X can register for X.
+
+### Module updates
+
+Since v12 the release manifest carries the files of the other modules (`#fmesh module` lines, section
+"Self-update"). Each module is updated only on machines that have it:
+
+| Module | Files | Fetched when | Installed by |
+|---|---|---|---|
+| Network | `meshd` | always | meshd itself, automatically, with the three-start rollback |
+| Desktop | `meshtray`, `fmesh-desktop` | they are next to meshd | meshd, on a local `install-desktop` request (the window's button, `fmesh update desktop`) or automatically when `desktop` is in `<dir>/auto-update` |
+| CLI | `fmesh` | it is next to meshd | the same, `install-cli` / `cli` |
+| Agent | `agent-inbox` | an agent-inbox service is registered | the user, with `fmesh update agent` or the window's button |
+
+- meshd fetches module files one at a time after its own update, writes them to disk as they arrive
+  (`/Library/Caches/flytomesh`, `/var/cache/flytomesh`, `C:\ProgramData\flytoMesh\cache`), checks
+  the SHA-256 from the signed manifest, then publishes them under their hash. It checks the hash again
+  right before installing. Stalled downloads resume; failed ones are retried after 10 minutes.
+- Desktop and CLI share meshd's directory and trust: meshd replaces them (new file, then rename). The
+  tray notices its executable was replaced and restarts itself.
+- Agent Mesh belongs to its user: `fmesh update agent` copies the verified file over the user's
+  `agent-inbox` (keeping `agent-inbox.prev`), then restarts the user's always-on services that run it
+  (launchd agents with KeepAlive, `systemctl --user` units). System units are listed for an admin.
+  Receivers started by running Claude or Codex sessions keep the old program until the session
+  reconnects its MCP server; queues are kept.
+- Agent-only machines (no network module) have no update source yet.
 
 ## 6. Operations
 

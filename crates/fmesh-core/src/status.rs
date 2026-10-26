@@ -33,6 +33,8 @@ pub struct Status {
     pub services: Vec<Service>,
     /// meshd's update state; `None` from meshd before release v11, which does not report it.
     pub update: Option<Update>,
+    /// Module files of the current release this machine has (meshd 0.12 and later).
+    pub module_files: Vec<ModuleFile>,
     /// Seconds since meshd wrote the file (`None`: no file).
     pub file_age: Option<u64>,
 }
@@ -55,7 +57,39 @@ pub struct Update {
     pub progress: Option<(u64, u64)>,
     /// A release that failed its health check and was rolled back.
     pub bad: Option<u64>,
+    /// Module groups meshd installs without asking (`auto-update`).
+    pub auto: Vec<String>,
     pub error: Option<String>,
+}
+
+/// A `module` line: one module file of the current release on this machine.
+#[derive(Default, PartialEq, Clone, Debug, Serialize)]
+pub struct ModuleFile {
+    pub name: String,
+    /// `current`, `ready` (verified in the cache), `waiting`, `downloading` or `failed`.
+    pub state: String,
+    pub release: u64,
+    pub progress: Option<(u64, u64)>,
+    pub sha256: String,
+    /// The verified cached file, when ready.
+    pub path: String,
+    pub error: Option<String>,
+}
+
+fn parse_module(name: &str, state: &str, rest: &[&str]) -> ModuleFile {
+    let progress = after(rest, "progress").and_then(|p| {
+        let (a, b) = p.split_once('/')?;
+        Some((a.parse().ok()?, b.parse().ok()?))
+    });
+    ModuleFile {
+        name: name.to_string(),
+        state: state.to_string(),
+        release: after(rest, "release").and_then(|v| v.parse().ok()).unwrap_or(0),
+        progress,
+        sha256: after(rest, "sha256").unwrap_or("").to_string(),
+        path: after(rest, "path").unwrap_or("").to_string(),
+        error: rest.iter().position(|w| *w == "error").map(|i| rest[i + 1..].join(" ")).filter(|e| !e.is_empty()),
+    }
 }
 
 fn parse_update(rest: &[&str]) -> Update {
@@ -73,6 +107,7 @@ fn parse_update(rest: &[&str]) -> Update {
         state: after(rest, "state").unwrap_or("").to_string(),
         progress,
         bad: num("bad"),
+        auto: after(rest, "auto").map(|a| a.split(',').map(str::to_string).collect()).unwrap_or_default(),
         error: rest.iter().position(|w| *w == "error").map(|i| rest[i + 1..].join(" ")).filter(|e| !e.is_empty()),
     }
 }
@@ -153,6 +188,7 @@ pub fn parse(text: &str, fresh: bool) -> Status {
                 s.release = after(rest, "release").unwrap_or("").to_string();
             }
             ["update", rest @ ..] => s.update = Some(parse_update(rest)),
+            ["module", name, state, rest @ ..] => s.module_files.push(parse_module(name, state, rest)),
             ["relay", name, _, state, "rtt", rtt, ..] => s.relays.push(Relay { name: name.to_string(), up: *state == "up", rtt: rtt.to_string() }),
             ["peer", name, ip, kind, rest @ ..] => {
                 let path = match *kind {
@@ -269,6 +305,10 @@ mod tests {
         let quiet = parse("update version 0.11.0 release 11 state idle\n", true).update.unwrap();
         assert_eq!((quiet.latest, quiet.error), (None, None));
         assert!(parse(SAMPLE, true).update.is_none(), "older meshd");
+        let m = parse("update version 0.12.0 release 12 state idle auto desktop,cli\nmodule meshtray ready release 12 sha256 ab path /c/ab\nmodule fmesh downloading release 12 progress 2/9\n", true);
+        assert_eq!(m.update.unwrap().auto, ["desktop", "cli"]);
+        assert_eq!((m.module_files[0].state.as_str(), m.module_files[0].path.as_str()), ("ready", "/c/ab"));
+        assert_eq!(m.module_files[1].progress, Some((2, 9)));
     }
 
     #[test]

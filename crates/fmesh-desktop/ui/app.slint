@@ -42,6 +42,8 @@ export struct ModuleItem {
     update: string,
     hint: string,
     path: string,
+    action: string,
+    busy: bool,
 }
 
 global Look {
@@ -271,6 +273,7 @@ component DeviceCard inherits Rectangle {
 component ModuleCard inherits Rectangle {
     in property <ModuleItem> module;
     callback copy-hint();
+    callback act();
     border-radius: 12px;
     border-width: 1px;
     border-color: Look.line;
@@ -322,11 +325,22 @@ component ModuleCard inherits Rectangle {
             }
             Rectangle { horizontal-stretch: 1; }
         }
-        if module.update != "": Text {
-            text: module.update;
-            color: Look.weak;
-            font-size: 12px;
-            wrap: word-wrap;
+        if module.update != "": HorizontalLayout {
+            spacing: 10px;
+            Text {
+                text: module.update;
+                color: module.action != "" ? Palette.foreground : Look.weak;
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if module.action != "": Button {
+                text: module.busy ? "正在更新..." : module.action;
+                primary: true;
+                enabled: !module.busy;
+                clicked => { root.act(); }
+            }
         }
         if module.path != "": Text {
             text: module.path;
@@ -392,6 +406,7 @@ export component AppWindow inherits Window {
     callback set-page(int);
     callback check-update();
     callback copy-hint(int);
+    callback act(int);
 
     forward-focus: keys;
     keys := FocusScope {
@@ -525,6 +540,7 @@ export component AppWindow inherits Window {
                     ModuleCard {
                         module: module;
                         copy-hint => { root.copy-hint(module.index); }
+                        act => { root.act(module.index); }
                     }
                 }
             }

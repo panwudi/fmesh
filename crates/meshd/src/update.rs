@@ -10,8 +10,12 @@
 //! Safety net: `<dir>/update.pending` counts the new binary's start attempts. Once it reaches
 //! a relay it is healthy: the marker goes away and the version is recorded. If it starts three
 //! times without reaching one, the old binary is put back and that version is not taken again.
+//!
+//! Module files (modules.rs) come after meshd's own update, one at a time, written to disk as
+//! they arrive. Nothing about them touches the health check or rollback above.
 
-use meshproto::release::{self, Release};
+use crate::modules::{Modules, State as ModState};
+use meshproto::release::{self, Binary, Release};
 use meshproto::wire;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -27,20 +31,32 @@ const STALL: Duration = Duration::from_secs(2);
 const ABANDON: Duration = Duration::from_secs(30);
 /// After a failed install, leave that version alone this long (no 1 MB download every 25 s).
 const RETRY_FAILED: Duration = Duration::from_secs(600);
+/// How often module states are recomputed from the files.
+const MODULES_EVERY: Duration = Duration::from_secs(10);
 
 enum Want {
     Manifest,
     Binary { version: u64 },
+    Module { name: String, bin: Binary },
 }
 
 struct Download {
     relay: SocketAddr,
     hash: [u8; 32],
     want: Want,
+    /// In memory (manifest, meshd), or `sink` for module files.
     data: Vec<u8>,
+    sink: Option<std::fs::File>,
+    total: usize,
     got: Vec<bool>,
     last_progress: Instant,
     asked: Instant,
+}
+
+impl Download {
+    fn is_module(&self) -> bool {
+        matches!(self.want, Want::Module { .. })
+    }
 }
 
 pub struct Updater {
@@ -60,8 +76,15 @@ pub struct Updater {
     failed: Option<(u64, Instant)>,
     /// The newest release a relay announced: version, relay name, when.
     latest: Option<(u64, String, Instant)>,
+    /// The relay that announced it, for module downloads.
+    latest_relay: Option<SocketAddr>,
     /// The last thing that went wrong, for the status file.
     error: Option<String>,
+    pub modules: Modules,
+    /// A manifest that did not verify, not fetched again for a while.
+    manifest_failed: Option<([u8; 32], Instant)>,
+    modules_at: Option<Instant>,
+    modules_retry: Instant,
 }
 
 fn read_u64(p: &Path) -> u64 {
@@ -91,7 +114,12 @@ impl Updater {
             paused: None,
             failed: None,
             latest: None,
+            latest_relay: None,
             error: None,
+            modules: Modules::new(exe.parent().map(Path::to_path_buf).unwrap_or_default(), dir),
+            manifest_failed: None,
+            modules_at: None,
+            modules_retry: Instant::now(),
         };
         u.clean_stale();
         if let Ok(s) = std::fs::read_to_string(&pending_path) {
@@ -131,26 +159,67 @@ impl Updater {
     pub fn announced(&mut self, sock: &UdpSocket, relay: SocketAddr, relay_name: &str, version: u64, hash: [u8; 32]) {
         if self.latest.as_ref().is_none_or(|(v, _, _)| version >= *v) {
             self.latest = Some((version, relay_name.to_string(), Instant::now()));
+            self.latest_relay = Some(relay);
         }
         let recently_failed = self.failed.is_some_and(|(v, t)| v == version && t.elapsed() < RETRY_FAILED);
-        if version <= self.installed || version == self.bad || recently_failed || self.pending.is_some() || self.dl.is_some() {
+        let need_meshd = !(version <= self.installed || version == self.bad || recently_failed || self.pending.is_some());
+        // The manifest also lists module files: fetch it once per release even when meshd
+        // itself is already current.
+        let bad_manifest = self.manifest_failed.is_some_and(|(h, t)| h == hash && t.elapsed() < RETRY_FAILED);
+        let need_manifest = version >= self.installed && self.modules.release_version().is_none_or(|v| v < version) && !bad_manifest;
+        if !(need_meshd || need_manifest) {
             return;
         }
-        eprintln!("meshd: release v{version} announced (running v{}), fetching the manifest", self.installed);
+        // A module download never holds up meshd's own update or a newer manifest.
+        if self.dl.as_ref().is_some_and(Download::is_module) {
+            self.pause_module();
+        }
+        if self.dl.is_some() {
+            return;
+        }
+        if need_meshd {
+            eprintln!("meshd: release v{version} announced (running v{}), fetching the manifest", self.installed);
+        }
         self.begin(sock, relay, hash, Want::Manifest);
+    }
+
+    fn pause_module(&mut self) {
+        if let Some(d) = self.dl.take() {
+            if let Want::Module { name, .. } = &d.want {
+                self.modules.set_state(name, ModState::Waiting);
+            }
+            self.paused = Some(d);
+        }
     }
 
     fn begin(&mut self, sock: &UdpSocket, relay: SocketAddr, hash: [u8; 32], want: Want) {
         let now = Instant::now();
-        let (data, got) = match self.paused.take_if(|p| p.hash == hash) {
+        let (data, sink, total, got) = match self.paused.take_if(|p| p.hash == hash) {
             Some(p) => {
                 let have = p.got.iter().filter(|g| **g).count();
                 eprintln!("meshd: resuming the download at {have}/{} chunks", p.got.len());
-                (p.data, p.got)
+                (p.data, p.sink, p.total, p.got)
             }
-            None => (vec![], vec![]),
+            None => (vec![], None, 0, vec![]),
         };
-        self.dl = Some(Download { relay, hash, want, data, got, last_progress: now, asked: now });
+        let sink = match (&want, sink) {
+            (_, Some(f)) => Some(f),
+            (Want::Module { name, bin }, None) => {
+                let opened = self.modules.part_path(bin).and_then(std::fs::File::create);
+                match opened {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        self.modules.set_state(name, ModState::Failed(format!("cache: {e}")));
+                        return;
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Want::Module { name, .. } = &want {
+            self.modules.set_state(name, ModState::Downloading);
+        }
+        self.dl = Some(Download { relay, hash, want, data, sink, total, got, last_progress: now, asked: now });
         self.ask(sock);
     }
 
@@ -179,15 +248,25 @@ impl Updater {
             return;
         }
         if d.got.is_empty() {
-            d.data = vec![0; total];
+            if d.sink.is_none() {
+                d.data = vec![0; total];
+            }
+            d.total = total;
             d.got = vec![false; total.div_ceil(wire::ROSTER_CHUNK)];
         }
-        if d.data.len() != total {
+        if d.total != total {
             return;
         }
         let i = off / wire::ROSTER_CHUNK;
         if !d.got[i] {
-            d.data[off..off + bytes.len()].copy_from_slice(bytes);
+            match &d.sink {
+                Some(f) => {
+                    if write_at(f, bytes, off as u64).is_err() {
+                        return;
+                    }
+                }
+                None => d.data[off..off + bytes.len()].copy_from_slice(bytes),
+            }
             d.got[i] = true;
             d.last_progress = Instant::now();
         }
@@ -200,19 +279,90 @@ impl Updater {
         }
     }
 
-    /// Re-asks for stalled downloads and gives up dead ones; called from the timer tick.
+    /// Re-asks for stalled downloads and gives up dead ones; called from the timer tick. With
+    /// nothing else going on, fetches the next module file.
     pub fn tick(&mut self, sock: &UdpSocket) {
-        let Some(d) = &self.dl else { return };
-        if d.last_progress.elapsed() > ABANDON {
-            eprintln!("meshd: update download stalled, will resume on a later announcement");
-            self.error = Some("download stalled, resuming on the next announcement".into());
-            self.paused = self.dl.take();
-        } else if d.asked.elapsed() > STALL {
-            self.ask(sock);
+        if let Some(d) = &self.dl {
+            if d.last_progress.elapsed() > ABANDON {
+                eprintln!("meshd: update download stalled, will resume later");
+                if d.is_module() {
+                    self.pause_module();
+                } else {
+                    self.error = Some("download stalled, resuming on the next announcement".into());
+                    self.paused = self.dl.take();
+                }
+            } else if d.asked.elapsed() > STALL {
+                self.ask(sock);
+            }
+            return;
+        }
+        let Some(rv) = self.modules.release_version() else { return };
+        if self.pending.is_some() || rv > self.installed && rv != self.bad {
+            return; // meshd's own update first
+        }
+        if self.modules_at.is_some_and(|t| t.elapsed() < MODULES_EVERY) {
+            return;
+        }
+        self.modules_at = Some(Instant::now());
+        if self.modules_retry.elapsed() > RETRY_FAILED {
+            self.modules_retry = Instant::now();
+            self.modules.retry_failed();
+        } else {
+            self.modules.refresh();
+        }
+        self.auto_install();
+        if let (Some((name, bin)), Some(relay)) = (self.modules.next_download(), self.latest_relay) {
+            eprintln!("meshd: fetching module file {name} of release v{rv} ({} bytes)", bin.size);
+            self.begin(sock, relay, bin.sha256, Want::Module { name, bin });
         }
     }
 
+    /// Installs ready files of the groups listed in `<dir>/auto-update`.
+    fn auto_install(&mut self) {
+        for group in self.modules.auto_groups() {
+            self.install_group(&group);
+        }
+    }
+
+    /// A local request or the auto-update list: install one group's ready files.
+    pub fn install_group(&mut self, group: &str) -> Option<String> {
+        let ready = crate::modules::GROUPS
+            .iter()
+            .find(|(g, _)| *g == group)
+            .is_some_and(|(_, files)| files.iter().any(|f| self.modules.entries.get(*f).is_some_and(|e| e.state == ModState::Ready)));
+        if !ready {
+            return None;
+        }
+        let res = self.modules.install(group);
+        match &res {
+            Ok(done) => eprintln!("meshd: installed {group}: {}", done.join(", ")),
+            Err(e) => eprintln!("meshd: installing {group} failed: {e}"),
+        }
+        Some(res.map(|d| d.join(", ")).unwrap_or_else(|e| e))
+    }
+
+    /// The `module` lines of the status file.
+    pub fn module_lines(&self) -> Vec<String> {
+        let progress = self.dl.as_ref().and_then(|d| match &d.want {
+            Want::Module { name, .. } => Some((name.as_str(), d.got.iter().filter(|g| **g).count(), d.got.len())),
+            _ => None,
+        });
+        self.modules.status_lines(progress)
+    }
+
     fn complete(&mut self, sock: &UdpSocket, d: Download) {
+        if let Want::Module { name, bin } = &d.want {
+            drop(d.sink);
+            match self.modules.finished(name, bin) {
+                Ok(()) => {
+                    eprintln!("meshd: module file {name} ready");
+                    self.auto_install();
+                }
+                Err(e) => eprintln!("meshd: {e}"),
+            }
+            self.modules_at = None; // next file right away
+            return;
+        }
         if release::sha256(&d.data) != d.hash {
             eprintln!("meshd: update blob does not match its hash, dropped");
             self.error = Some("downloaded file does not match its hash".into());
@@ -225,9 +375,19 @@ impl Updater {
                     Err(e) => {
                         eprintln!("meshd: release manifest rejected: {e}");
                         self.error = Some(format!("manifest rejected: {e}"));
+                        self.manifest_failed = Some((d.hash, Instant::now()));
                         return;
                     }
                 };
+                // A newer manifest makes an older paused download pointless.
+                if self.paused.as_ref().is_some_and(|p| p.is_module()) {
+                    self.paused = None;
+                }
+                self.modules.set_release(rel.clone());
+                self.modules_at = None;
+                if rel.version <= self.installed || rel.version == self.bad {
+                    return; // fetched for its module files; meshd is current
+                }
                 let Some(bin) = rel.for_platform(&release::platform()).cloned() else {
                     eprintln!("meshd: release v{} has no {} binary", rel.version, release::platform());
                     self.error = Some(format!("release v{} has no {} binary", rel.version, release::platform()));
@@ -242,6 +402,7 @@ impl Updater {
                 eprintln!("meshd: fetching the {} binary of release v{} ({} bytes)", bin.platform, rel.version, bin.size);
                 self.begin(sock, d.relay, bin.sha256, Want::Binary { version: rel.version });
             }
+            Want::Module { .. } => unreachable!("handled above"),
             Want::Binary { version } => {
                 if let Err(e) = self.install(&d.data, version) {
                     eprintln!("meshd: installing release v{version}: {e} (retrying in 10 minutes)");
@@ -303,6 +464,11 @@ impl Updater {
 
     #[cfg(test)]
     fn bare(admin_pub: [u8; 32]) -> Updater {
+        Updater::bare_in(admin_pub, std::env::temp_dir())
+    }
+
+    #[cfg(test)]
+    fn bare_in(admin_pub: [u8; 32], sys: PathBuf) -> Updater {
         Updater {
             dir: std::env::temp_dir(),
             exe: PathBuf::from("/nonexistent/meshd"),
@@ -314,7 +480,12 @@ impl Updater {
             paused: None,
             failed: None,
             latest: None,
+            latest_relay: None,
             error: None,
+            modules: Modules::new(sys.clone(), &sys),
+            manifest_failed: None,
+            modules_at: None,
+            modules_retry: Instant::now(),
         }
     }
 
@@ -342,6 +513,10 @@ impl Updater {
         if self.bad > self.installed {
             s += &format!(" bad {}", self.bad);
         }
+        let auto = self.modules.auto_groups();
+        if !auto.is_empty() {
+            s += &format!(" auto {}", auto.join(","));
+        }
         if let Some(e) = &self.error {
             s += &format!(" error {}", e.replace(['\n', '\r'], " "));
         }
@@ -358,6 +533,21 @@ impl Updater {
         };
         format!("release v{} ({}){dl}", self.installed, release::platform())
     }
+}
+
+#[cfg(unix)]
+fn write_at(f: &std::fs::File, data: &[u8], off: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(f, data, off)
+}
+
+#[cfg(windows)]
+fn write_at(f: &std::fs::File, mut data: &[u8], mut off: u64) -> io::Result<()> {
+    while !data.is_empty() {
+        let n = std::os::windows::fs::FileExt::seek_write(f, data, off)?;
+        data = &data[n..];
+        off += n as u64;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -405,6 +595,63 @@ mod tests {
         assert!(u.dl.is_some(), "the last chunk is still missing");
         u.part(&sock, relay, &part(&hash, blob.len(), 5 * wire::ROSTER_CHUNK, &blob));
         assert!(u.dl.is_none(), "complete");
+    }
+}
+
+#[cfg(test)]
+mod module_tests {
+    use super::*;
+
+    fn part(hash: &[u8; 32], data: &[u8], off: usize) -> Vec<u8> {
+        let mut m = wire::header(wire::BLOB_PART, 0).to_vec();
+        m.extend_from_slice(hash);
+        m.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        m.extend_from_slice(&(off as u32).to_be_bytes());
+        m.extend_from_slice(&data[off..(off + wire::ROSTER_CHUNK).min(data.len())]);
+        m
+    }
+
+    #[test]
+    fn module_files_download_to_disk_after_meshd_is_current() {
+        let tmp = |t: &str| {
+            let d = std::env::temp_dir().join(format!("meshd-upd-{t}-{}", meshproto::random_u64()));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        };
+        let (sys, cache) = (tmp("sys"), tmp("cache"));
+        let fname = if cfg!(windows) { "fmesh.exe" } else { "fmesh" };
+        std::fs::write(sys.join(fname), b"old cli").unwrap();
+        let new: Vec<u8> = (0..3 * wire::ROSTER_CHUNK as u32 + 5).map(|i| (i * 7) as u8).collect();
+        let bin = Binary { module: "fmesh".into(), platform: release::platform(), sha256: release::sha256(&new), size: new.len() as u64 };
+
+        let mut u = Updater::bare_in([0; 32], sys.clone());
+        u.modules = Modules::new(sys.clone(), &sys).with_cache(cache.clone());
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        u.latest_relay = Some(relay);
+        u.modules.set_release(Release { version: 12, meshd: vec![], modules: vec![bin.clone()] });
+
+        // meshd itself is behind: its own update goes first.
+        u.installed = 11;
+        u.tick(&sock);
+        assert!(u.dl.is_none());
+
+        u.installed = 12;
+        u.tick(&sock);
+        assert!(u.dl.as_ref().is_some_and(|d| d.is_module() && d.data.is_empty()), "written to a file, not memory");
+        assert!(u.module_lines()[0].starts_with("module fmesh downloading release 12 progress 0/"), "{:?}", u.module_lines());
+        for off in (0..new.len()).step_by(wire::ROSTER_CHUNK) {
+            u.part(&sock, relay, &part(&bin.sha256, &new, off));
+        }
+        assert!(u.dl.is_none());
+        assert!(u.module_lines()[0].starts_with("module fmesh ready release 12 sha256 "), "{:?}", u.module_lines());
+
+        // A local request installs it.
+        assert!(u.install_group("cli").is_some());
+        assert_eq!(std::fs::read(sys.join(fname)).unwrap(), new);
+        assert_eq!(u.module_lines(), vec!["module fmesh current release 12".to_string()]);
+        std::fs::remove_dir_all(&sys).ok();
+        std::fs::remove_dir_all(&cache).ok();
     }
 }
 

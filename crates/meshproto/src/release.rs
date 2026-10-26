@@ -37,6 +37,22 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     ring::digest::digest(&ring::digest::SHA256, data).as_ref().try_into().expect("32 bytes")
 }
 
+/// SHA-256 of a file, read in pieces (module files can be tens of MB).
+pub fn sha256_file(path: &std::path::Path) -> io::Result<[u8; 32]> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(&buf[..n]);
+    }
+    Ok(ctx.finish().as_ref().try_into().expect("32 bytes"))
+}
+
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
